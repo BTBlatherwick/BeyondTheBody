@@ -5,6 +5,7 @@
   --text: #e8e8ec;
   --muted: #8a8a96;
   --accent: #c0392b;
+  --on-accent: #fff;
 }
 * { box-sizing: border-box; }
 body {
@@ -215,7 +216,36 @@ h2 {
   box-shadow: 0 0 0 1px var(--accent);
 }
 .item input { accent-color: var(--accent); width: 1.2rem; height: 1.2rem; }
-.count { color: var(--muted); margin-top: 1.5rem; text-align: center; }
+.count { color: var(--muted); margin-top: .8rem; text-align: center; font-size: .85rem; }
+
+/* Equipment checklist: a section header, then simple rows with a round tick on the right */
+.eq-search { margin-bottom: .4rem; }
+.eq-head { display: flex; justify-content: space-between; align-items: baseline; margin: 1.3rem 0 .2rem; }
+.eq-title { font-weight: 600; font-size: 1.05rem; }
+.eq-have { color: var(--muted); font-weight: 400; font-size: .8rem; margin-left: .3rem; }
+.eq-all { background: none; border: 0; color: #7f9cff; font: inherit; font-size: .85rem; cursor: pointer; padding: .3rem 0; }
+.eq-row { display: flex; align-items: center; gap: .9rem; padding: .75rem 0; border-bottom: 1px solid var(--border); cursor: pointer; }
+.eq-ic {
+  width: 48px; height: 48px; border-radius: 12px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  background: rgba(255, 255, 255, 0.06);
+}
+.eq-ic svg { width: 24px; height: 24px; fill: none; stroke: var(--muted); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.eq-row.on .eq-ic svg { stroke: var(--text); }
+.eq-txt { flex: 1; min-width: 0; }
+.eq-name { display: block; font-size: 1rem; }
+.eq-sub { display: block; font-size: .78rem; color: #7f9cff; margin-top: .15rem; }
+.eq-check {
+  -webkit-appearance: none; appearance: none; flex-shrink: 0; width: 26px; height: 26px; margin: 0; border-radius: 50%;
+  border: 2px solid #55555c; background: transparent; position: relative; cursor: pointer;
+}
+.eq-check:checked { background: var(--accent); border-color: var(--accent); }
+.eq-check:checked::after {
+  content: ""; position: absolute; left: 7px; top: 3px; width: 6px; height: 12px;
+  border: solid var(--on-accent, #fff); border-width: 0 2.5px 2.5px 0; transform: rotate(45deg);
+}
+[data-theme="grit"] .eq-ic, [data-theme="grit"] .eq-check { border-radius: 2px; }
+[data-theme="grit"] .eq-sub, [data-theme="grit"] .eq-all { color: var(--muted); }
+[data-theme="clean"] .eq-ic { background: #17171a; }
 
 /* Goals and settings chips */
 .chips { display: flex; flex-wrap: wrap; gap: .5rem; }
@@ -846,3 +876,18 @@ html[data-locked="1"] body > *:not(.lock) { visibility: hidden; }   /* nothing s
 [data-theme="clean"] .rest-btns button { background: var(--chip); border: 0; border-radius: 999px; color: var(--text); }
 [data-theme="clean"] .update-banner button { border-radius: 999px; }
 [data-theme="clean"] .lock-keys button { background: #151517; border-color: #232326; }
+
+/* Collapsible equipment sections */
+.eq-head { cursor: pointer; align-items: center; }
+.eq-title { display: flex; align-items: center; gap: .4rem; }
+.eq-chev { width: 18px; height: 18px; fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform .2s; }
+.eq-head.open .eq-chev { transform: rotate(90deg); }
+
+/* ===== BTB logo ===== */
+.logo-av { width: 46px; height: 56px; object-fit: contain; flex-shrink: 0; display: block; }
+.feed-who .logo-av { width: 26px; height: 32px; }
+.lock-logo { width: min(230px, 62vw); height: auto; display: block; margin-bottom: .2rem; }
+.about-card { text-align: center; }
+.about-logo { width: min(240px, 70%); height: auto; display: block; margin: .2rem auto 1rem; }
+.about-card .btn-row { justify-content: center; }
+@media (max-height: 640px) { .lock-logo { width: 150px; } }

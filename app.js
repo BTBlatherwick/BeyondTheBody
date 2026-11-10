@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "1.8.0";
+const APP_VERSION = "2.1.0";
 
 // =====================================================================
 // SMALL HELPERS
@@ -130,41 +130,119 @@ tabs.forEach(function (tab) {
 // EQUIPMENT
 // =====================================================================
 const equipment = {
-  "Free weights": ["Dumbbells", "Barbell", "Kettlebells", "Weight plates", "EZ curl bar"],
-  "Benches & racks": ["Flat bench", "Adjustable bench", "Squat rack", "Pull-up bar", "Dip station"],
-  "Machines": ["Cable machine", "Leg press", "Lat pulldown", "Smith machine"],
-  "Other": ["Resistance bands", "Ab wheel", "Skipping rope", "Foam roller", "Treadmill"]
+  "Free weights": ["Dumbbells", "Kettlebells", "Weight plates"],
+  "Bars": ["Barbell", "EZ curl bar", "Trap bar", "Landmine"],
+  "Benches & racks": ["Flat bench", "Adjustable bench", "Decline bench", "Squat rack", "Pull-up bar", "Dip station",
+                      "Preacher curl bench", "Back extension bench", "Plyo box"],
+  "Cable machines": ["Cable machine", "Lat pulldown", "Low row machine"],
+  "Weight machines": ["Leg press", "Smith machine", "Leg extension machine", "Leg curl machine", "Chest press machine",
+                      "Pec deck machine", "Shoulder press machine", "Lateral raise machine", "Assisted pull-up machine",
+                      "Hip abduction machine", "Hip adduction machine", "Glute kickback machine", "Calf raise machine",
+                      "Ab crunch machine", "Rotary torso machine", "Preacher curl machine", "Triceps extension machine"],
+  "Plate-loaded machines": ["Hack squat machine", "Pendulum squat machine", "Belt squat machine", "Hip thrust machine",
+                            "Plate-loaded chest press", "Plate-loaded incline press", "Plate-loaded shoulder press",
+                            "Plate-loaded row", "T-bar row machine"],
+  "Balls & accessories": ["Stability ball", "Medicine ball", "Suspension trainer", "Gymnastic rings", "Ab wheel",
+                          "Core sliders", "Dip belt", "Weight vest"],
+  "Resistance bands": ["Resistance bands", "Mini loop bands"],
+  "Cardio & recovery": ["Treadmill", "Skipping rope", "Foam roller"]
 };
 
 let selected = load("selectedEquipment", []);
 
+// Small outline icons, one per section (we don't have photos of each machine)
+const EQUIP_ICONS = {
+  "Free weights":          '<path d="M6.5 6.5v11"/><path d="M17.5 6.5v11"/><path d="M3.5 9v6"/><path d="M20.5 9v6"/><path d="M6.5 12h11"/>',
+  "Bars":                  '<path d="M2 12h20"/><path d="M5 8v8"/><path d="M19 8v8"/>',
+  "Benches & racks":       '<path d="M3 11h18v3H3z"/><path d="M6 14v5"/><path d="M18 14v5"/>',
+  "Cable machines":        '<path d="M6 3v18"/><path d="M18 3v18"/><path d="M6 6h12"/><path d="M12 6v8"/><circle cx="12" cy="17" r="2.5"/>',
+  "Weight machines":       '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6"/><path d="M9 12h6"/><path d="M9 16h3"/>',
+  "Plate-loaded machines": '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="2.5"/><path d="M12 3.5v4"/>',
+  "Balls & accessories":   '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c3 3 3 14 0 17"/><path d="M12 3.5c-3 3-3 14 0 17"/>',
+  "Resistance bands":      '<path d="M4 8c4-5 12-5 16 0"/><path d="M4 16c4 5 12 5 16 0"/><path d="M4 8v8"/><path d="M20 8v8"/>',
+  "Cardio & recovery":     '<path d="M3 12h4l2-6 4 12 2-6h6"/>'
+};
+
+let equipQuery = "";   // what's typed in the search box
+let eqOpen = load("eqOpen", {});   // which sections are expanded, e.g. { "Bars": true }
+
+// How many exercises in the library need this piece of equipment
+function exercisesUsing(name) {
+  return library.filter(function (l) {
+    return l.need.some(function (n) { return n.split("|").indexOf(name) >= 0; });
+  }).length;
+}
+
 function renderEquipment() {
   const listEl = $("equipment-list");
-  listEl.innerHTML = "";
+  const q = equipQuery.trim().toLowerCase();
+  let html = "";
+  let shown = 0;
+  let total = 0;
 
   for (const category in equipment) {
-    const heading = document.createElement("h2");
-    heading.textContent = category;
-    listEl.appendChild(heading);
+    const all = equipment[category];
+    total += all.length;
+    const items = all.filter(function (n) { return !q || n.toLowerCase().indexOf(q) >= 0; });
+    if (!items.length) continue;
+    shown += items.length;
 
-    equipment[category].forEach(function (name) {
-      const isSelected = selected.includes(name);
+    const have = all.filter(function (n) { return selected.includes(n); }).length;
+    const allOn = have === all.length;
 
-      const row = document.createElement("label");
-      row.className = "item" + (isSelected ? " selected" : "");
-      row.innerHTML = `<input type="checkbox" ${isSelected ? "checked" : ""}> ${name}`;
+    const open = !!q || !!eqOpen[category];   // searching opens everything that matches
+    html += `<div class="eq-head${open ? " open" : ""}" data-eq="toggle" data-cat="${esc(category)}">
+      <div class="eq-title"><svg class="eq-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>${esc(category)} <span class="eq-have">${have}/${all.length}</span></div>
+      <button class="eq-all" data-eq="all" data-cat="${esc(category)}">${allOn ? "Clear" : "Select all"}</button>
+    </div>`;
 
-      row.querySelector("input").addEventListener("change", function () {
-        toggleEquipment(name);
-      });
-
-      listEl.appendChild(row);
+    if (open) items.forEach(function (name) {
+      const on = selected.includes(name);
+      const n = exercisesUsing(name);
+      const sub = n === 0 ? "No exercises yet" : n + (n === 1 ? " exercise" : " exercises");
+      html += `<label class="eq-row${on ? " on" : ""}">
+        <span class="eq-ic"><svg viewBox="0 0 24 24">${EQUIP_ICONS[category] || EQUIP_ICONS["Other"]}</svg></span>
+        <span class="eq-txt"><span class="eq-name">${esc(name)}</span>
+          <span class="eq-sub">${sub}</span></span>
+        <input type="checkbox" class="eq-check" data-name="${esc(name)}" ${on ? "checked" : ""}>
+      </label>`;
     });
   }
 
-  $("count").textContent = selected.length + " items selected";
+  if (!shown) html = `<p class="feed-meta" style="margin:1rem 0">No equipment matches “${esc(equipQuery)}”.</p>`;
+  listEl.innerHTML = html;
+
+  $("count").textContent = selected.length + " of " + total + " items selected";
   $("home-equip").textContent = selected.length + " items";
+  $("home-gym-sub").textContent = selected.length + (selected.length === 1 ? " item of equipment" : " items of equipment");
 }
+
+$("equipment-list").addEventListener("change", function (e) {
+  const box = e.target.closest ? e.target.closest(".eq-check") : null;
+  if (box) toggleEquipment(box.dataset.name);
+});
+$("equipment-list").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-eq]");
+  if (!b) return;
+
+  if (b.dataset.eq === "toggle") {
+    eqOpen[b.dataset.cat] = !eqOpen[b.dataset.cat];
+    save("eqOpen", eqOpen);
+    renderEquipment();
+    return;
+  }
+
+  const items = equipment[b.dataset.cat] || [];
+  const allOn = items.every(function (n) { return selected.includes(n); });
+  selected = selected.filter(function (n) { return items.indexOf(n) < 0; });   // take the whole section out first
+  if (!allOn) selected = selected.concat(items);                                // then put it all back in if we're selecting
+  save("selectedEquipment", selected);
+  renderEquipment();
+});
+$("eq-search").addEventListener("input", function (e) {
+  equipQuery = e.target.value;
+  renderEquipment();
+});
 
 function toggleEquipment(name) {
   if (selected.includes(name)) {
@@ -557,9 +635,191 @@ const library = [
   x("Hanging Knee Raise",         "core", "iso", ["Pull-up bar"]),
   x("Ab Wheel Rollout",           "core", "iso", ["Ab wheel"]),
   x("Cable Crunch",               "core", "iso", ["Cable machine"]),
-  x("Russian Twist",              "core", "iso", ["Weight plates|Dumbbells|Kettlebells"]),
+  x("Russian Twist",              "core", "iso", ["Weight plates|Dumbbells|Kettlebells|Medicine ball"]),
   x("Dead Bug",                   "core", "iso", []),
-  x("Bicycle Crunch",             "core", "iso", [])
+  x("Bicycle Crunch",             "core", "iso", []),
+
+  // ===== Added with the bigger equipment list =====
+  // Chest
+  x("Incline Barbell Bench Press",   "chest", "compound", ["Barbell", "Adjustable bench"]),
+  x("Decline Barbell Bench Press",   "chest", "compound", ["Barbell", "Decline bench"]),
+  x("Decline Dumbbell Press",        "chest", "compound", ["Dumbbells", "Decline bench"]),
+  x("Dumbbell Floor Press",          "chest", "compound", ["Dumbbells"]),
+  x("Smith Machine Incline Press",   "chest", "compound", ["Smith machine", "Adjustable bench"]),
+  x("Machine Chest Press",           "chest", "compound", ["Chest press machine"]),
+  x("Plate-Loaded Chest Press",      "chest", "compound", ["Plate-loaded chest press"]),
+  x("Plate-Loaded Incline Press",    "chest", "compound", ["Plate-loaded incline press"]),
+  x("Chest Dips",                    "chest", "compound", ["Dip station"]),
+  x("Ring Push-ups",                 "chest", "compound", ["Gymnastic rings"]),
+  x("Suspension Push-ups",           "chest", "compound", ["Suspension trainer"]),
+  x("Decline Push-ups",              "chest", "compound", ["Flat bench|Adjustable bench|Decline bench|Plyo box"]),
+  x("Pec Deck Fly",                  "chest", "iso",      ["Pec deck machine"]),
+  x("Incline Dumbbell Fly",          "chest", "iso",      ["Dumbbells", "Adjustable bench"]),
+  x("High-to-Low Cable Fly",         "chest", "iso",      ["Cable machine"]),
+  x("Low-to-High Cable Fly",         "chest", "iso",      ["Cable machine"]),
+  x("Dumbbell Squeeze Press",        "chest", "iso",      ["Dumbbells", BENCH]),
+  x("Plate Svend Press",             "chest", "iso",      ["Weight plates"]),
+  x("Band Chest Fly",                "chest", "iso",      ["Resistance bands"]),
+  x("Suspension Chest Fly",          "chest", "iso",      ["Suspension trainer"]),
+
+  // Back
+  x("Wide-Grip Pull-ups",            "back", "compound", ["Pull-up bar"]),
+  x("Neutral-Grip Pull-ups",         "back", "compound", ["Pull-up bar"]),
+  x("Weighted Pull-ups",             "back", "compound", ["Pull-up bar", "Dip belt"]),
+  x("Assisted Pull-ups",             "back", "compound", ["Assisted pull-up machine"]),
+  x("Wide-Grip Lat Pulldown",        "back", "compound", ["Lat pulldown"]),
+  x("Close-Grip Lat Pulldown",       "back", "compound", ["Lat pulldown"]),
+  x("Reverse-Grip Lat Pulldown",     "back", "compound", ["Lat pulldown"]),
+  x("Single-Arm Lat Pulldown",       "back", "compound", ["Cable machine"]),
+  x("Single-Arm Cable Row",          "back", "compound", ["Cable machine"]),
+  x("Seated Machine Row",            "back", "compound", ["Low row machine"]),
+  x("Chest-Supported Machine Row",   "back", "compound", ["Plate-loaded row"]),
+  x("T-Bar Row Machine",             "back", "compound", ["T-bar row machine"]),
+  x("Landmine T-Bar Row",            "back", "compound", ["Barbell", "Landmine"]),
+  x("Meadows Row",                   "back", "compound", ["Barbell", "Landmine"]),
+  x("Pendlay Row",                   "back", "compound", ["Barbell"]),
+  x("Rack Pull",                     "back", "compound", ["Barbell", "Squat rack"]),
+  x("Bent-Over Dumbbell Row",        "back", "compound", ["Dumbbells"]),
+  x("Chest-Supported Dumbbell Row",  "back", "compound", ["Dumbbells", "Adjustable bench"]),
+  x("Inverted Row (Smith Machine)",  "back", "compound", ["Smith machine"]),
+  x("Suspension Row",                "back", "compound", ["Suspension trainer"]),
+  x("Ring Row",                      "back", "compound", ["Gymnastic rings"]),
+  x("Band Lat Pulldown",             "back", "compound", ["Resistance bands"]),
+  x("Barbell Shrug",                 "back", "iso",      ["Barbell"]),
+  x("Dumbbell Shrug",                "back", "iso",      ["Dumbbells"]),
+  x("Trap Bar Shrug",                "back", "iso",      ["Trap bar"]),
+  x("Back Extension",                "back", "iso",      ["Back extension bench"]),
+  x("Superman",                      "back", "iso",      []),
+
+  // Rear shoulders / upper back
+  x("Reverse Pec Deck",              "rear", "iso", ["Pec deck machine"]),
+  x("Cable Rear Delt Fly",           "rear", "iso", ["Cable machine"]),
+  x("Chest-Supported Reverse Fly",   "rear", "iso", ["Dumbbells", "Adjustable bench"]),
+  x("Incline Dumbbell Y Raise",      "rear", "iso", ["Dumbbells", "Adjustable bench"]),
+  x("Band Face Pull",                "rear", "iso", ["Resistance bands"]),
+  x("Suspension Reverse Fly",        "rear", "iso", ["Suspension trainer"]),
+
+  // Shoulders
+  x("Machine Shoulder Press",        "shoulders", "compound", ["Shoulder press machine"]),
+  x("Plate-Loaded Shoulder Press",   "shoulders", "compound", ["Plate-loaded shoulder press"]),
+  x("Seated Dumbbell Shoulder Press","shoulders", "compound", ["Dumbbells", "Adjustable bench"]),
+  x("Arnold Press",                  "shoulders", "compound", ["Dumbbells"]),
+  x("Push Press",                    "shoulders", "compound", ["Barbell"]),
+  x("Landmine Press",                "shoulders", "compound", ["Barbell", "Landmine"]),
+  x("Barbell Upright Row",           "shoulders", "compound", ["Barbell"]),
+  x("Machine Lateral Raise",         "shoulders", "iso",      ["Lateral raise machine"]),
+  x("Leaning Dumbbell Lateral Raise","shoulders", "iso",      ["Dumbbells"]),
+  x("Dumbbell Front Raise",          "shoulders", "iso",      ["Dumbbells"]),
+  x("Cable Front Raise",             "shoulders", "iso",      ["Cable machine"]),
+  x("Cable Upright Row",             "shoulders", "iso",      ["Cable machine"]),
+  x("Kettlebell Halo",               "shoulders", "iso",      ["Kettlebells"]),
+
+  // Biceps
+  x("Preacher Curl",                 "biceps", "iso", ["EZ curl bar", "Preacher curl bench"]),
+  x("Dumbbell Preacher Curl",        "biceps", "iso", ["Dumbbells", "Preacher curl bench"]),
+  x("Machine Preacher Curl",         "biceps", "iso", ["Preacher curl machine"]),
+  x("Concentration Curl",            "biceps", "iso", ["Dumbbells"]),
+  x("Spider Curl",                   "biceps", "iso", ["Dumbbells", "Adjustable bench"]),
+  x("Zottman Curl",                  "biceps", "iso", ["Dumbbells"]),
+  x("Cable Rope Hammer Curl",        "biceps", "iso", ["Cable machine"]),
+  x("Single-Arm Cable Curl",         "biceps", "iso", ["Cable machine"]),
+  x("Reverse Curl",                  "biceps", "iso", ["EZ curl bar"]),
+  x("Drag Curl",                     "biceps", "iso", ["Barbell"]),
+  x("Suspension Biceps Curl",        "biceps", "iso", ["Suspension trainer"]),
+
+  // Triceps
+  x("Machine Triceps Extension",     "triceps", "iso",      ["Triceps extension machine"]),
+  x("Weighted Dips",                 "triceps", "compound", ["Dip station", "Dip belt"]),
+  x("Ring Dips",                     "triceps", "compound", ["Gymnastic rings"]),
+  x("Close-Grip Smith Press",        "triceps", "compound", ["Smith machine", BENCH]),
+  x("JM Press",                      "triceps", "compound", ["Barbell", BENCH]),
+  x("Dumbbell Skull Crushers",       "triceps", "iso",      ["Dumbbells", BENCH]),
+  x("Triceps Kickback",              "triceps", "iso",      ["Dumbbells"]),
+  x("Overhead Cable Triceps Extension","triceps","iso",     ["Cable machine"]),
+  x("Reverse-Grip Cable Pushdown",   "triceps", "iso",      ["Cable machine"]),
+  x("Band Overhead Triceps Extension","triceps","iso",      ["Resistance bands"]),
+  x("Suspension Triceps Extension",  "triceps", "iso",      ["Suspension trainer"]),
+
+  // Quads
+  x("Leg Extension",                 "quads", "iso",      ["Leg extension machine"]),
+  x("Hack Squat",                    "quads", "compound", ["Hack squat machine"]),
+  x("Pendulum Squat",                "quads", "compound", ["Pendulum squat machine"]),
+  x("Belt Squat",                    "quads", "compound", ["Belt squat machine"]),
+  x("Front Squat",                   "quads", "compound", ["Barbell", "Squat rack"]),
+  x("Single-Leg Press",              "quads", "compound", ["Leg press"]),
+  x("Smith Machine Split Squat",     "quads", "compound", ["Smith machine"]),
+  x("Barbell Lunge",                 "quads", "compound", ["Barbell", "Squat rack"]),
+  x("Dumbbell Lunge",                "quads", "compound", ["Dumbbells"]),
+  x("Dumbbell Reverse Lunge",        "quads", "compound", ["Dumbbells"]),
+  x("Dumbbell Squat",                "quads", "compound", ["Dumbbells"]),
+  x("Dumbbell Sumo Squat",           "quads", "compound", ["Dumbbells|Kettlebells"]),
+  x("Kettlebell Front Squat",        "quads", "compound", ["Kettlebells"]),
+  x("Box Step-ups",                  "quads", "compound", ["Plyo box"]),
+  x("Box Jumps",                     "quads", "compound", ["Plyo box"]),
+  x("Suspension Squat",              "quads", "compound", ["Suspension trainer"]),
+  x("Band Squat",                    "quads", "compound", ["Resistance bands"]),
+  x("Jump Squats",                   "quads", "compound", []),
+  x("Cossack Squat",                 "quads", "compound", []),
+  x("Sissy Squat",                   "quads", "iso",      []),
+  x("Wall Sit",                      "quads", "iso",      [], true),
+
+  // Hamstrings and glutes
+  x("Leg Curl",                      "hamstrings", "iso",      ["Leg curl machine"]),
+  x("Glute Kickback Machine",        "hamstrings", "iso",      ["Glute kickback machine"]),
+  x("Hip Abduction Machine",         "hamstrings", "iso",      ["Hip abduction machine"]),
+  x("Hip Adduction Machine",         "hamstrings", "iso",      ["Hip adduction machine"]),
+  x("Machine Hip Thrust",            "hamstrings", "compound", ["Hip thrust machine"]),
+  x("Trap Bar Deadlift",             "hamstrings", "compound", ["Trap bar"]),
+  x("Sumo Deadlift",                 "hamstrings", "compound", ["Barbell"]),
+  x("Stiff-Leg Deadlift",            "hamstrings", "compound", ["Barbell"]),
+  x("Good Morning",                  "hamstrings", "compound", ["Barbell"]),
+  x("Barbell Glute Bridge",          "hamstrings", "compound", ["Barbell"]),
+  x("Kettlebell Deadlift",           "hamstrings", "compound", ["Kettlebells"]),
+  x("Single-Leg Hip Thrust",         "hamstrings", "compound", [BENCH]),
+  x("Glute Hyperextension",          "hamstrings", "iso",      ["Back extension bench"]),
+  x("Cable Glute Kickback",          "hamstrings", "iso",      ["Cable machine"]),
+  x("Stability Ball Leg Curl",       "hamstrings", "iso",      ["Stability ball"]),
+  x("Slider Leg Curl",               "hamstrings", "iso",      ["Core sliders"]),
+  x("Suspension Hamstring Curl",     "hamstrings", "iso",      ["Suspension trainer"]),
+  x("Banded Lateral Walk",           "hamstrings", "iso",      ["Mini loop bands"]),
+  x("Banded Glute Bridge",           "hamstrings", "iso",      ["Mini loop bands"]),
+
+  // Calves
+  x("Machine Calf Raise",            "calves", "iso", ["Calf raise machine"]),
+  x("Smith Machine Calf Raise",      "calves", "iso", ["Smith machine"]),
+  x("Barbell Calf Raise",            "calves", "iso", ["Barbell", "Squat rack"]),
+  x("Single-Leg Dumbbell Calf Raise","calves", "iso", ["Dumbbells"]),
+  x("Seated Dumbbell Calf Raise",    "calves", "iso", ["Dumbbells", BENCH]),
+  x("Box Calf Raise",                "calves", "iso", ["Plyo box"]),
+
+  // Core
+  x("Ab Crunch Machine",             "core", "iso",      ["Ab crunch machine"]),
+  x("Rotary Torso Machine",          "core", "iso",      ["Rotary torso machine"]),
+  x("Decline Sit-ups",               "core", "iso",      ["Decline bench"]),
+  x("Hanging Leg Raise",             "core", "iso",      ["Pull-up bar"]),
+  x("Toes-to-Bar",                   "core", "compound", ["Pull-up bar"]),
+  x("Dip Station Leg Raise",         "core", "iso",      ["Dip station"]),
+  x("Stability Ball Crunch",         "core", "iso",      ["Stability ball"]),
+  x("Stability Ball Rollout",        "core", "iso",      ["Stability ball"]),
+  x("Medicine Ball Slam",            "core", "compound", ["Medicine ball"]),
+  x("Suspension Fallout",            "core", "iso",      ["Suspension trainer"]),
+  x("Suspension Pike",               "core", "iso",      ["Suspension trainer"]),
+  x("Slider Body Saw",               "core", "iso",      ["Core sliders"]),
+  x("Slider Mountain Climbers",      "core", "compound", ["Core sliders"]),
+  x("Pallof Press",                  "core", "iso",      ["Cable machine"]),
+  x("Cable Woodchop",                "core", "iso",      ["Cable machine"]),
+  x("Band Pallof Press",             "core", "iso",      ["Resistance bands"]),
+  x("Landmine Rotation",             "core", "iso",      ["Barbell", "Landmine"]),
+  x("Kettlebell Windmill",           "core", "iso",      ["Kettlebells"]),
+  x("Farmer's Carry",                "core", "compound", ["Dumbbells|Kettlebells"], true),
+  x("Weighted Plank",                "core", "iso",      ["Weight vest"], true),
+  x("Side Plank",                    "core", "iso",      [], true),
+  x("Hollow Hold",                   "core", "iso",      [], true),
+  x("Mountain Climbers",             "core", "compound", []),
+  x("Bird Dog",                      "core", "iso",      []),
+  x("Reverse Crunch",                "core", "iso",      []),
+  x("Lying Leg Raise",               "core", "iso",      []),
+  x("Sit-ups",                       "core", "iso",      [])
 ];
 
 // =====================================================================
@@ -1637,7 +1897,7 @@ function renderFeed() {
 
     return `<div class="card feed-card">
       <div class="feed-top">
-        <div class="feed-who"><span class="avatar">G</span><div class="card-label">${date}</div></div>
+        <div class="feed-who"><img class="logo-av" src="logo-mark.svg" alt=""><div class="card-label">${date}</div></div>
       </div>
       <div class="big">${esc(w.name)}</div>
       <div class="feed-meta feed-summary">${esc(summary)}</div>

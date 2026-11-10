@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>GymApp</title>
+  <title>BTB - Beyond The Body</title>
   <meta name="theme-color" content="#000000">
   <script>
     // Set the theme before the page draws, so there's no flash of the wrong look
@@ -17,10 +17,11 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="GymApp">
+  <meta name="apple-mobile-web-app-title" content="BTB">
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
-  <link rel="icon" type="image/png" href="icon-192.png">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -28,7 +29,7 @@
   <!-- ===== SCREENS ===== -->
   <section class="screen active" id="home">
     <div class="home-top" onclick="showTab('gym')">
-      <span class="avatar">G</span>
+      <img class="logo-av" src="logo-mark.svg" alt="BTB">
       <div class="home-top-text">
         <div class="home-gym">My Gym</div>
         <div class="feed-meta" id="home-gym-sub"></div>
@@ -144,6 +145,11 @@
     <h1>Your gym</h1>
     <p class="sub">Tell the app about your training.</p>
 
+    <h2>Equipment</h2>
+    <input type="search" class="select eq-search" id="eq-search" placeholder="Search equipment" autocomplete="off">
+    <div id="equipment-list"></div>
+    <p class="count" id="count"></p>
+
     <h2>Goals</h2>
     <div class="card" id="goals-card"></div>
 
@@ -170,7 +176,8 @@
     </div>
 
     <h2>About</h2>
-    <div class="card">
+    <div class="card about-card">
+      <img class="about-logo" src="logo-full.svg" alt="BTB - Beyond The Body">
       <div class="feed-meta" id="version-label"></div>
       <div class="btn-row">
         <button class="btn ghost" id="version-check">Check for updates</button>
@@ -178,9 +185,6 @@
       <div class="feed-meta" id="version-status" style="margin-top:.5rem"></div>
     </div>
 
-    <h2>Equipment</h2>
-    <div id="equipment-list"></div>
-    <p class="count" id="count"></p>
   </section>
 
   <!-- ===== REST TIMER ===== -->
@@ -224,6 +228,7 @@
 
   <div class="lock" id="lock" role="dialog" aria-modal="true" aria-label="PIN">
     <button class="lock-x" id="lock-cancel" aria-label="Cancel">✕</button>
+    <img class="lock-logo" src="logo-full.svg" alt="BTB - Beyond The Body">
     <div class="lock-title" id="lock-title"></div>
     <div class="lock-sub" id="lock-sub"></div>
     <div class="lock-dots" id="lock-dots"><i></i><i></i><i></i><i></i></div>
