@@ -1,7 +1,7 @@
 // GymApp service worker: keeps a copy of the app so it opens offline.
 // It tries the network first, so while you are editing the code you always see your latest changes.
 // Bump the version number if you ever need to force a clean cache.
-const CACHE = "gymapp-v1.5";
+const CACHE = "gymapp-v1.5.1";
 const FILES = ["./", "index.html", "style.css", "app.js", "manifest.json",
                "icon-192.png", "icon-512.png", "apple-touch-icon.png"];
 
@@ -27,7 +27,8 @@ self.addEventListener("activate", function (e) {
 self.addEventListener("fetch", function (e) {
   if (e.request.method !== "GET" || !e.request.url.startsWith(self.location.origin)) return;
   e.respondWith(
-    fetch(e.request)
+    // "no-cache" = always check with the server first, so new versions show up straight away
+    fetch(e.request, { cache: "no-cache" })
       .then(function (res) {
         const copy = res.clone();
         caches.open(CACHE).then(function (c) { c.put(e.request, copy); });

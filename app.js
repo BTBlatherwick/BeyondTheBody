@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "1.5.0";
+const APP_VERSION = "1.5.1";
 
 // =====================================================================
 // SMALL HELPERS
@@ -3028,7 +3028,25 @@ function checkForUpdate(manual) {
     .catch(function () { return "offline"; });
 }
 
-$("update-reload").addEventListener("click", function () { location.reload(); });
+// Reload properly: ask the server for fresh copies of every file first (this also
+// replaces the copies the browser was holding on to), clear the offline copies, then reload.
+function refreshApp() {
+  $("update-text").textContent = "Updating…";
+  const files = ["./", "index.html", "style.css", "app.js", "manifest.json", "sw.js"];
+  const fetches = typeof fetch === "function"
+    ? files.map(function (f) { return fetch(f, { cache: "reload" }).catch(function () {}); })
+    : [];
+  return Promise.all(fetches)
+    .then(function () {
+      return (typeof caches !== "undefined")
+        ? caches.keys().then(function (keys) { return Promise.all(keys.map(function (k) { return caches.delete(k); })); })
+        : null;
+    })
+    .catch(function () {})
+    .then(function () { location.reload(); });
+}
+
+$("update-reload").addEventListener("click", refreshApp);
 $("update-dismiss").addEventListener("click", function () { $("update-banner").classList.remove("show"); });
 
 $("version-check").addEventListener("click", function () {
