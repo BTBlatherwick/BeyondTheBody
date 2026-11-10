@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.5.0";
 
 // =====================================================================
 // SMALL HELPERS
@@ -2370,6 +2370,469 @@ $("hist-btn").addEventListener("click", function () {
 
 
 // =====================================================================
+// PROGRESS PHOTOS
+// Photos are too big for localStorage, so they live in IndexedDB (a bigger
+// store inside the browser). Each photo is shrunk first, so a photo takes
+// about 150 to 300 KB instead of several MB.
+// =====================================================================
+const PHOTO_TAGS = [["front", "Front"], ["side", "Side"], ["back", "Back"], ["other", "Other"]];
+
+// Everything that touches IndexedDB is in here, so the rest of the code never has to.
+const photoStore = {
+  db: null,
+  open: function () {
+    const self = this;
+    return new Promise(function (resolve, reject) {
+      if (self.db) { resolve(self.db); return; }
+      if (typeof indexedDB === "undefined") { reject(new Error("IndexedDB not available")); return; }
+      const req = indexedDB.open("gymapp-photos", 1);
+      req.onupgradeneeded = function () { req.result.createObjectStore("photos", { keyPath: "id" }); };
+      req.onsuccess = function () { self.db = req.result; resolve(self.db); };
+      req.onerror = function () { reject(req.error); };
+    });
+  },
+  run: function (mode, action) {
+    return this.open().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        const tx = db.transaction("photos", mode);
+        const req = action(tx.objectStore("photos"));
+        tx.oncomplete = function () { resolve(req ? req.result : undefined); };
+        tx.onerror = function () { reject(tx.error); };
+        tx.onabort = function () { reject(tx.error); };
+      });
+    });
+  },
+  all: function () { return this.run("readonly", function (s) { return s.getAll(); }); },
+  put: function (rec) { return this.run("readwrite", function (s) { return s.put(rec); }); },
+  remove: function (id) { return this.run("readwrite", function (s) { return s["delete"](id); }); }
+};
+
+let photos = [];            // every photo record: { id, date, tag, note, added, w, h, blob, thumb }
+let photosReady = false;
+let photosFailed = false;
+const photoUrls = {};       // id + ":thumb" or ":full" -> a temporary link the <img> can show
+
+function cleanPhotoView(v) {
+  const d = { cols: 3, shape: "portrait", sort: "new", group: "none", tag: "all", labels: true, gap: "normal" };
+  const ok = {
+    cols: [1, 2, 3, 4, 5], shape: ["square", "portrait", "original"], sort: ["new", "old"],
+    group: ["none", "month", "tag"], gap: ["tight", "normal", "roomy"],
+    tag: ["all"].concat(PHOTO_TAGS.map(function (t) { return t[0]; }))
+  };
+  const out = {};
+  v = (v && typeof v === "object") ? v : {};
+  Object.keys(d).forEach(function (k) {
+    if (k === "labels") out[k] = typeof v[k] === "boolean" ? v[k] : d[k];
+    else out[k] = ok[k].indexOf(v[k]) >= 0 ? v[k] : d[k];
+  });
+  return out;
+}
+
+let photoView = cleanPhotoView(load("photoView", null));
+let photoPanel = false;       // is the layout panel open?
+let compareMode = false;
+let compareSel = [];          // ids picked for comparing (max 2)
+let newPhotoTag = "front";
+let viewerTag = "front";
+
+function urlFor(p, kind) {
+  const k = p.id + ":" + kind;
+  if (!photoUrls[k]) photoUrls[k] = URL.createObjectURL(kind === "thumb" ? p.thumb : p.blob);
+  return photoUrls[k];
+}
+function forgetUrls(id) {
+  [":thumb", ":full"].forEach(function (s) {
+    if (photoUrls[id + s]) { URL.revokeObjectURL(photoUrls[id + s]); delete photoUrls[id + s]; }
+  });
+}
+function revokeFullUrls() {
+  Object.keys(photoUrls).forEach(function (k) {
+    if (/:full$/.test(k)) { URL.revokeObjectURL(photoUrls[k]); delete photoUrls[k]; }
+  });
+}
+
+function shortDate(key, withYear) {
+  return new Date(key + "T00:00:00").toLocaleDateString("en-GB",
+    withYear ? { day: "numeric", month: "short", year: "numeric" } : { day: "numeric", month: "short" });
+}
+function tagLabel(key) {
+  const t = PHOTO_TAGS.find(function (t) { return t[0] === key; });
+  return t ? t[1] : "Other";
+}
+
+// Your logged body weight closest to a date (within a week), or null
+function weightNear(date) {
+  let best = null, bestGap = 8;
+  bodyLog.forEach(function (e) {
+    if (!(e.weight > 0)) return;
+    const gap = Math.abs(daysBetween(e.date, date));
+    if (gap < bestGap) { best = e; bestGap = gap; }
+  });
+  return best;
+}
+
+// Filter, sort and group the photos the way the layout options say.
+// Returns [{ title, items }]. Kept separate from drawing so it's easy to test.
+function photoGroups(list, view) {
+  const dir = view.sort === "new" ? -1 : 1;
+  const items = list.filter(function (p) { return view.tag === "all" || p.tag === view.tag; });
+  items.sort(function (a, b) {
+    const c = a.date < b.date ? -1 : (a.date > b.date ? 1 : (a.added || 0) - (b.added || 0));
+    return c * dir;
+  });
+
+  if (view.group === "month") {
+    const groups = [];
+    items.forEach(function (p) {
+      const key = p.date.slice(0, 7);
+      let g = groups.length ? groups[groups.length - 1] : null;
+      if (!g || g.key !== key) {
+        g = { key: key, title: new Date(key + "-01T00:00:00").toLocaleDateString("en-GB", { month: "long", year: "numeric" }), items: [] };
+        groups.push(g);
+      }
+      g.items.push(p);
+    });
+    return groups;
+  }
+  if (view.group === "tag") {
+    return PHOTO_TAGS.map(function (t) {
+      return { key: t[0], title: t[1], items: items.filter(function (p) { return p.tag === t[0]; }) };
+    }).filter(function (g) { return g.items.length; });
+  }
+  return [{ key: "all", title: "", items: items }];
+}
+
+// ----- turning a picked file into a small stored photo -----
+function loadViaImg(file) {
+  return new Promise(function (resolve, reject) {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = function () { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = function () { URL.revokeObjectURL(url); reject(new Error("Couldn’t read that image.")); };
+    img.src = url;
+  });
+}
+function loadBitmap(file) {
+  if (typeof createImageBitmap === "function") {
+    // "from-image" makes sure phone photos aren't turned sideways
+    return createImageBitmap(file, { imageOrientation: "from-image" }).catch(function () { return loadViaImg(file); });
+  }
+  return loadViaImg(file);
+}
+function shrink(src, maxSide, quality) {
+  const w0 = src.width || src.naturalWidth, h0 = src.height || src.naturalHeight;
+  const scale = Math.min(1, maxSide / Math.max(w0, h0));
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(w0 * scale));
+  c.height = Math.max(1, Math.round(h0 * scale));
+  c.getContext("2d").drawImage(src, 0, 0, c.width, c.height);
+  return new Promise(function (resolve) {
+    c.toBlob(function (blob) { resolve({ blob: blob, w: c.width, h: c.height }); }, "image/jpeg", quality);
+  });
+}
+function makePhotoRecord(file, date, tag) {
+  return loadBitmap(file).then(function (bmp) {
+    return shrink(bmp, 1280, 0.82).then(function (full) {
+      return shrink(bmp, 480, 0.75).then(function (thumb) {
+        if (bmp.close) bmp.close();
+        if (!full.blob || !thumb.blob) throw new Error("Couldn’t process that image.");
+        return {
+          id: Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7),
+          date: date, tag: tag, note: "", added: Date.now(),
+          w: full.w, h: full.h, blob: full.blob, thumb: thumb.blob
+        };
+      });
+    });
+  });
+}
+
+function addPhotos(files, date, tag) {
+  const msg = $("ph-msg");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))) { msg.textContent = "Pick a date first."; return Promise.resolve(); }
+  if (date > dateKey(new Date())) { msg.textContent = "That date is in the future."; return Promise.resolve(); }
+
+  // Ask the browser not to throw the photos away when space is tight
+  if (navigator.storage && navigator.storage.persist) { try { navigator.storage.persist(); } catch (e) {} }
+
+  let added = 0, failed = 0, i = 0;
+  function next() {
+    if (i >= files.length) {
+      msg.textContent = added ? "Added " + added + (added === 1 ? " photo." : " photos.") + (failed ? " " + failed + " couldn’t be added." : "")
+                              : "Couldn’t add those photos.";
+      renderPhotos();
+      return Promise.resolve();
+    }
+    msg.textContent = "Adding " + (i + 1) + " of " + files.length + "…";
+    const file = files[i++];
+    return makePhotoRecord(file, date, tag)
+      .then(function (rec) { return photoStore.put(rec).then(function () { photos.push(rec); added++; }); })
+      .catch(function () { failed++; })
+      .then(next);
+  }
+  return next();
+}
+
+function loadPhotos() {
+  return photoStore.all().then(function (list) {
+    photos = list || [];
+    photosReady = true;
+    renderPhotos();
+  }).catch(function () {
+    photosFailed = true;
+    renderPhotos();
+  });
+}
+
+// ----- the add form (drawn separately so your typing isn't wiped) -----
+function renderPhotoForm() {
+  const old = $("ph-new-date");
+  const date = old && old.value ? old.value : dateKey(new Date());
+  $("photo-add").innerHTML = `<div class="card-label">Add progress photos</div>
+    <input type="date" class="select" id="ph-new-date" value="${esc(date)}" max="${dateKey(new Date())}">
+    <div class="chips" style="margin:.7rem 0">` +
+    PHOTO_TAGS.map(function (t) {
+      return `<button class="chip${newPhotoTag === t[0] ? " on" : ""}" data-pt="${t[0]}">${t[1]}</button>`;
+    }).join("") + `</div>
+    <input type="file" id="ph-file" accept="image/*" multiple hidden>
+    <button class="btn" data-ph="add">Choose photos</button>
+    <div class="feed-meta" id="ph-msg" style="margin-top:.5rem"></div>
+    <div class="feed-meta" style="margin-top:.4rem">Photos stay on this phone only. They aren’t part of the backup file.</div>`;
+}
+
+$("photo-add").addEventListener("click", function (e) {
+  const t = e.target.closest("[data-pt]");
+  if (t) { newPhotoTag = t.dataset.pt; renderPhotoForm(); return; }
+  const b = e.target.closest("[data-ph]");
+  if (b && b.dataset.ph === "add") $("ph-file").click();
+});
+$("photo-add").addEventListener("change", function (e) {
+  if (!e.target || e.target.id !== "ph-file") return;
+  const files = Array.prototype.slice.call(e.target.files || []);
+  const date = $("ph-new-date").value;
+  e.target.value = "";
+  if (files.length) addPhotos(files, date, newPhotoTag);
+});
+
+// ----- the grid -----
+function chipRow(label, key, options) {
+  return `<div class="prow"><div class="prow-label">${label}</div>` +
+    options.map(function (o) {
+      const on = String(photoView[key]) === o[0];
+      return `<button class="chip${on ? " on" : ""}" data-pv="${key}" data-v="${o[0]}">${o[1]}</button>`;
+    }).join("") + `</div>`;
+}
+
+function renderPhotos() {
+  const el = $("photo-grid");
+  if (photosFailed) {
+    el.innerHTML = `<p class="feed-meta">Photos can’t be stored in this browser right now (private browsing can cause this).</p>`;
+    return;
+  }
+  if (!photosReady) { el.innerHTML = `<p class="feed-meta">Loading photos…</p>`; return; }
+  if (!photos.length) {
+    el.innerHTML = `<p class="feed-meta">No photos yet. Add your first ones above, and use the layout controls here to arrange them however you like.</p>`;
+    return;
+  }
+
+  compareSel = compareSel.filter(function (id) { return photos.some(function (p) { return p.id === id; }); });
+  const v = photoView;
+
+  let html = `<div class="prow"><div class="prow-label">Columns</div>` +
+    [1, 2, 3, 4, 5].map(function (n) {
+      return `<button class="chip${v.cols === n ? " on" : ""}" data-pv="cols" data-v="${n}">${n}</button>`;
+    }).join("") + `</div>
+    <div class="btn-row" style="margin:.2rem 0 .6rem">
+      <button class="btn ghost" data-ph="layout">${photoPanel ? "Hide layout options" : "Layout options"}</button>
+      <button class="btn ${compareMode ? "" : "ghost"}" data-ph="compare">${compareMode ? "Cancel compare" : "Compare"}</button>
+    </div>`;
+
+  if (photoPanel) {
+    html += `<div class="ppanel">` +
+      chipRow("Shape", "shape", [["square", "Square"], ["portrait", "Portrait"], ["original", "Original"]]) +
+      chipRow("Order", "sort", [["new", "Newest first"], ["old", "Oldest first"]]) +
+      chipRow("Group", "group", [["none", "None"], ["month", "Month"], ["tag", "Angle"]]) +
+      chipRow("Show", "tag", [["all", "All"]].concat(PHOTO_TAGS)) +
+      chipRow("Spacing", "gap", [["tight", "Tight"], ["normal", "Normal"], ["roomy", "Roomy"]]) +
+      chipRow("Labels", "labels", [["true", "On"], ["false", "Off"]]) +
+      `</div>`;
+  }
+
+  if (compareMode) {
+    html += `<div class="feed-meta" style="margin-bottom:.6rem">${compareSel.length < 2
+      ? "Tap two photos to compare (" + compareSel.length + " of 2 picked)."
+      : `<button class="btn" data-ph="cmp-go">Compare these two</button>`}</div>`;
+  }
+
+  const gapPx = { tight: 3, normal: 8, roomy: 14 }[v.gap];
+  const groups = photoGroups(photos, v);
+  const count = groups.reduce(function (n, g) { return n + g.items.length; }, 0);
+
+  if (!count) {
+    html += `<p class="feed-meta">No photos match this filter.</p>`;
+  }
+
+  groups.forEach(function (g) {
+    if (g.title) html += `<div class="pgroup-title">${esc(g.title)} · ${g.items.length}</div>`;
+    html += `<div class="pgrid" style="--cols:${v.cols};--gap:${gapPx}px">`;
+    g.items.forEach(function (p) {
+      const ratio = v.shape === "square" ? "1 / 1" : (v.shape === "portrait" ? "3 / 4" : (p.w || 3) + " / " + (p.h || 4));
+      const selected = compareSel.indexOf(p.id) >= 0;
+      const label = shortDate(p.date, false) + (v.cols <= 3 ? " · " + tagLabel(p.tag) : "");
+      html += `<button class="pitem${selected ? " sel" : ""}" data-ph="open" data-id="${esc(p.id)}" style="aspect-ratio:${ratio}">
+        <img src="${urlFor(p, "thumb")}" alt="Progress photo, ${esc(shortDate(p.date, true))}" loading="lazy">` +
+        (v.labels ? `<span class="plabel">${esc(label)}</span>` : "") +
+        (selected ? `<span class="pcheck">${compareSel.indexOf(p.id) + 1}</span>` : "") +
+        `</button>`;
+    });
+    html += `</div>`;
+  });
+
+  el.innerHTML = html;
+}
+
+$("photo-grid").addEventListener("click", function (e) {
+  const pv = e.target.closest("[data-pv]");
+  if (pv) {
+    const key = pv.dataset.pv;
+    const raw = pv.dataset.v;
+    const next = {};
+    Object.keys(photoView).forEach(function (k) { next[k] = photoView[k]; });
+    next[key] = key === "cols" ? Number(raw) : (key === "labels" ? raw === "true" : raw);
+    photoView = cleanPhotoView(next);
+    save("photoView", photoView);
+    renderPhotos();
+    return;
+  }
+
+  const b = e.target.closest("[data-ph]");
+  if (!b) return;
+  const act = b.dataset.ph;
+
+  if (act === "layout") { photoPanel = !photoPanel; renderPhotos(); return; }
+  if (act === "compare") { compareMode = !compareMode; compareSel = []; renderPhotos(); return; }
+  if (act === "cmp-go") { openCompare(); return; }
+  if (act === "open") {
+    const id = b.dataset.id;
+    if (compareMode) {
+      const at = compareSel.indexOf(id);
+      if (at >= 0) compareSel.splice(at, 1);
+      else if (compareSel.length < 2) compareSel.push(id);
+      else compareSel = [compareSel[1], id];
+      renderPhotos();
+    } else {
+      openPhotoViewer(id);
+    }
+  }
+});
+
+// ----- one photo, big -----
+function openPhotoViewer(id) {
+  const p = photos.find(function (x) { return x.id === id; });
+  if (!p) return;
+  revokeFullUrls();
+  viewerTag = p.tag;
+  const w = weightNear(p.date);
+
+  openSheet(`<div class="pview">
+    <div class="card-label">Progress photo</div>
+    <img src="${urlFor(p, "full")}" alt="Progress photo, ${esc(shortDate(p.date, true))}">
+    <div class="feed-meta" style="margin:.5rem 0">${w ? "Body weight around then: " + round1(toDisp(w.weight)) + " " + unit() + " (" + esc(shortDate(w.date, false)) + ")" : "No body weight logged within a week of this photo."}</div>
+    <input type="date" class="select" id="ph-date" value="${esc(p.date)}" max="${dateKey(new Date())}">
+    <div class="chips" style="margin:.7rem 0">` +
+    PHOTO_TAGS.map(function (t) {
+      return `<button class="chip${viewerTag === t[0] ? " on" : ""}" data-ph="vtag" data-t="${t[0]}">${t[1]}</button>`;
+    }).join("") + `</div>
+    <input class="set-input note" id="ph-note" placeholder="Note (optional)" value="${esc(p.note || "")}">
+    <div class="btn-row" style="margin-top:.8rem">
+      <button class="btn" data-ph="vsave" data-id="${esc(p.id)}">Save</button>
+      <button class="btn ghost" data-ph="vclose">Close</button>
+    </div>
+    <div class="btn-row" style="margin-top:.5rem">
+      <a class="btn ghost" href="${urlFor(p, "full")}" download="progress-${esc(p.date)}.jpg">Save to device</a>
+      <button class="btn ghost" data-ph="vdel" data-id="${esc(p.id)}">Delete</button>
+    </div>
+    <div class="feed-meta" id="ph-vmsg" style="margin-top:.5rem"></div>
+  </div>`);
+}
+
+function openCompare() {
+  const two = compareSel.map(function (id) { return photos.find(function (p) { return p.id === id; }); })
+    .filter(Boolean)
+    .sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : (a.added || 0) - (b.added || 0)); });
+  if (two.length < 2) return;
+  revokeFullUrls();
+
+  function side(p, title) {
+    const w = weightNear(p.date);
+    return `<div><img src="${urlFor(p, "full")}" alt="${title} photo">
+      <div class="big" style="font-size:.95rem;margin-top:.4rem">${title}</div>
+      <div class="feed-meta">${esc(shortDate(p.date, true))} · ${esc(tagLabel(p.tag))}</div>
+      <div class="feed-meta">${w ? round1(toDisp(w.weight)) + " " + unit() : "no weight logged"}</div></div>`;
+  }
+
+  const days = daysBetween(two[0].date, two[1].date);
+  const w0 = weightNear(two[0].date), w1 = weightNear(two[1].date);
+  let summary = days + (days === 1 ? " day" : " days") + " apart";
+  if (w0 && w1) {
+    const d = toDisp(w1.weight) - toDisp(w0.weight);
+    summary += " · " + (d > 0 ? "+" : "") + round1(d) + " " + unit();
+  }
+
+  openSheet(`<div class="pview">
+    <div class="card-label">Compare</div>
+    <div class="cmp">${side(two[0], "Before")}${side(two[1], "After")}</div>
+    <div class="feed-meta" style="margin:.7rem 0">${esc(summary)}</div>
+    <button class="btn" data-ph="vclose">Close</button>
+  </div>`);
+}
+
+$("sheet").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-ph]");
+  if (!b) return;
+  const act = b.dataset.ph;
+
+  if (act === "vclose") { closeSheet(); revokeFullUrls(); return; }
+
+  if (act === "vtag") {
+    viewerTag = b.dataset.t;
+    document.querySelectorAll("#sheet [data-ph='vtag']").forEach(function (c) {
+      c.classList.toggle("on", c.dataset.t === viewerTag);
+    });
+    return;
+  }
+
+  const p = photos.find(function (x) { return x.id === b.dataset.id; });
+  if (!p) return;
+
+  if (act === "vsave") {
+    const date = $("ph-date").value;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > dateKey(new Date())) {
+      $("ph-vmsg").textContent = "Pick a valid date (not in the future).";
+      return;
+    }
+    p.date = date;
+    p.tag = viewerTag;
+    p.note = $("ph-note").value.trim().slice(0, 200);
+    photoStore.put(p).then(function () {
+      closeSheet(); revokeFullUrls(); renderPhotos();
+    }).catch(function () { $("ph-vmsg").textContent = "Couldn’t save the change."; });
+    return;
+  }
+
+  if (act === "vdel") {
+    if (!confirm("Delete this photo? This can’t be undone.")) return;
+    photoStore.remove(p.id).then(function () {
+      forgetUrls(p.id);
+      photos = photos.filter(function (x) { return x.id !== p.id; });
+      closeSheet(); revokeFullUrls(); renderPhotos();
+    }).catch(function () { $("ph-vmsg").textContent = "Couldn’t delete it."; });
+  }
+});
+
+loadPhotos();
+
+
+// =====================================================================
 // BACKUP AND RESTORE
 // Your data lives in this browser only. A backup is a .json file you can keep safe.
 // =====================================================================
@@ -2508,6 +2971,8 @@ function renderAll() {
   renderFeed();
   renderProgress();
   renderBodyForm();
+  renderPhotoForm();
+  renderPhotos();
   renderBackupStatus();
 }
 
