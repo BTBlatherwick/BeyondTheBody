@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>GymApp</title>
+  <meta name="theme-color" content="#0d0d10">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="GymApp">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ===== SCREENS ===== -->
+  <section class="screen active" id="home">
+    <p class="sub">Welcome back</p>
+    <h1>READY TO TRAIN?</h1>
+
+    <div class="week" id="week-strip"></div>
+
+    <div class="card">
+      <div class="card-label">Streak</div>
+      <div class="big" id="streak">0 days</div>
+    </div>
+
+    <div class="card" id="deload-card" style="display:none"></div>
+
+    <div class="card" id="backup-nudge" style="display:none">
+      <div class="card-label">Back up your data</div>
+      <div class="feed-meta" id="backup-nudge-text"></div>
+      <button class="btn" onclick="exportBackup()">Download backup</button>
+    </div>
+
+    <div class="card">
+      <div class="card-label">Next workout</div>
+      <div class="big" id="next-workout">Push Day</div>
+      <button class="btn" onclick="showTab('workout')">Start</button>
+    </div>
+
+    <div class="card" onclick="showTab('gym')">
+      <div class="card-label">Your gym</div>
+      <div class="big" id="home-equip">0 items</div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">Last 12 weeks</div>
+      <div class="heatmap" id="heatmap"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">Badges</div>
+      <div class="badges" id="badges"></div>
+    </div>
+  </section>
+
+  <section class="screen" id="workout">
+    <h1 id="workout-title">WORKOUT</h1>
+    <p class="sub" id="workout-progress"></p>
+    <button class="btn gen" id="generate-btn">🎲 Generate workout</button>
+    <p class="gen-status" id="gen-status"></p>
+    <div id="routines-card"></div>
+    <div id="workout-list"></div>
+  </section>
+
+  <section class="screen" id="progress">
+    <h1>PROGRESS</h1>
+    <p class="sub">Your lifts over time.</p>
+    <div class="stats" id="stats"></div>
+    <div id="attention"></div>
+
+    <h2>This week’s training</h2>
+    <div class="card" id="muscle-card"></div>
+
+    <h2>Exercise trend</h2>
+    <div class="card">
+      <select class="select" id="chart-select"></select>
+      <div id="chart"></div>
+      <button class="btn ghost" id="hist-btn">View all sessions</button>
+    </div>
+
+    <h2>Personal records</h2>
+    <div class="card" id="prs"></div>
+
+    <h2>Body</h2>
+    <div class="card" id="body-form"></div>
+    <div class="card" id="body-chart"></div>
+  </section>
+
+  <section class="screen" id="feed">
+    <h1>FEED</h1>
+    <p class="sub">Your workout history.</p>
+    <div id="feed-list"></div>
+  </section>
+
+  <section class="screen" id="gym">
+    <h1>YOUR GYM</h1>
+    <p class="sub">Tell the app about your training.</p>
+
+    <h2>Goals</h2>
+    <div class="card" id="goals-card"></div>
+
+    <h2>Settings</h2>
+    <div class="card" id="settings-card"></div>
+
+    <h2>Your weights</h2>
+    <div class="card" id="gear-card"></div>
+
+    <h2>Custom exercises</h2>
+    <div class="card" id="custom-card"></div>
+
+    <h2>Your data</h2>
+    <div class="card">
+      <div class="feed-meta" id="backup-status"></div>
+      <div class="btn-row">
+        <button class="btn" id="export-btn">Download backup</button>
+        <button class="btn ghost" id="import-btn">Restore backup</button>
+      </div>
+      <input type="file" id="import-file" accept=".json,application/json" hidden>
+    </div>
+
+    <h2>Equipment</h2>
+    <div id="equipment-list"></div>
+    <p class="count" id="count"></p>
+  </section>
+
+  <!-- ===== REST TIMER ===== -->
+  <div class="rest" id="rest">
+    <div>
+      <div class="rest-label">Rest</div>
+      <div class="rest-time" id="rest-time">1:30</div>
+    </div>
+    <div class="rest-btns">
+      <button id="rest-add">+15s</button>
+      <button id="rest-skip">Skip</button>
+    </div>
+  </div>
+
+  <!-- ===== SHEET (finish summary and editor) ===== -->
+  <div class="overlay" id="overlay"><div class="sheet" id="sheet"></div></div>
+
+  <!-- ===== TAB BAR ===== -->
+  <nav class="tabbar">
+    <button class="tab active" data-target="home">
+      <svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/></svg>
+      Home
+    </button>
+    <button class="tab" data-target="workout">
+      <svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg>
+      Workout
+    </button>
+    <button class="tab" data-target="progress">
+      <svg viewBox="0 0 24 24"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="15 7 21 7 21 13"/></svg>
+      Progress
+    </button>
+    <button class="tab" data-target="feed">
+      <svg viewBox="0 0 24 24"><line x1="9" y1="6" x2="21" y2="6"/><line x1="9" y1="12" x2="21" y2="12"/><line x1="9" y1="18" x2="21" y2="18"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/></svg>
+      Feed
+    </button>
+    <button class="tab" data-target="gym">
+      <svg viewBox="0 0 24 24"><path d="M6.5 6.5v11"/><path d="M17.5 6.5v11"/><path d="M3.5 9v6"/><path d="M20.5 9v6"/><path d="M6.5 12h11"/></svg>
+      Gym
+    </button>
+  </nav>
+
+  <script src="app.js"></script>
+</body>
+</html>
