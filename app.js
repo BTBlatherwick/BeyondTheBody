@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "1.5.1";
+const APP_VERSION = "1.6.0";
 
 // =====================================================================
 // SMALL HELPERS
@@ -45,6 +45,15 @@ const REST_OPTIONS = [45, 60, 90, 120, 180, 240];
 
 let settings = load("settings", { units: "kg", rest: 90 });
 if (!settings.warmup) settings.warmup = "off";
+if (!settings.theme) settings.theme = "grit";
+
+// The look of the app: "grit" (stark, concrete, no glass) or "classic" (the glassy one)
+function applyTheme() {
+  document.documentElement.setAttribute("data-theme", settings.theme);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", settings.theme === "grit" ? "#070707" : "#0d0d10");
+}
+applyTheme();
 let restMap = load("restMap", {});   // per-exercise rest times, e.g. { "Deadlift": 180 }
 
 function unit() { return settings.units; }
@@ -64,6 +73,7 @@ function renderSettings() {
     return h + "</div></div>";
   }
   $("settings-card").innerHTML =
+    group("Theme", "theme", [["grit", "Grit"], ["classic", "Classic"]]) +
     group("Units", "units", [["kg", "kg"], ["lb", "lb"]]) +
     group("Default rest time", "rest", [[60, "1:00"], [90, "1:30"], [120, "2:00"], [180, "3:00"]]) +
     group("Auto warm-up sets", "warmup", [["off", "Off"], ["barbell", "Barbell lifts"]]);
@@ -75,6 +85,7 @@ $("settings-card").addEventListener("click", function (e) {
   const key = btn.dataset.skey;
   settings[key] = key === "rest" ? Number(btn.dataset.value) : btn.dataset.value;
   save("settings", settings);
+  applyTheme();
   renderSettings();
   renderGear();
   renderBodyForm();

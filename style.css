@@ -541,3 +541,94 @@ h2 {
 .cmp { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; margin-top: .6rem; }
 .cmp img { width: 100%; max-height: none; aspect-ratio: 3 / 4; object-fit: cover; }
 a.btn { display: block; text-align: center; text-decoration: none; }
+
+
+/* =====================================================================
+   GRIT THEME
+   Stark and quiet: near-black concrete, bone-white text, one dried-blood accent.
+   No glass, no glow, no rounded corners. Switch it in Gym > Theme.
+   ===================================================================== */
+[data-theme="grit"] {
+  --bg: #070707;
+  --card: #0e0e0e;
+  --border: #262522;
+  --text: #d8d4cc;
+  --muted: #77736b;
+  --accent: #9e2b1c;
+  --edge: #3a3731;
+}
+[data-theme="grit"] body {
+  background:
+    radial-gradient(ellipse at 50% 30%, transparent 35%, rgba(0, 0, 0, 0.7)),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 .55 -.22'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"),
+    var(--bg);
+  background-attachment: fixed;
+  font-family: "Arial Narrow", "Roboto Condensed", "Helvetica Neue", system-ui, sans-serif;
+}
+
+/* Type: heavy, upright, uppercase where it counts */
+[data-theme="grit"] h1 { font-weight: 900; font-size: 2rem; letter-spacing: .14em; text-transform: uppercase; }
+[data-theme="grit"] h2 {
+  font-weight: 800; letter-spacing: .2em; color: var(--muted);
+  padding-bottom: .4rem; border-bottom: 1px solid var(--border);
+}
+[data-theme="grit"] .card-label, [data-theme="grit"] .stat-lbl { font-weight: 700; letter-spacing: .18em; }
+[data-theme="grit"] .big, [data-theme="grit"] .stat-num, [data-theme="grit"] .rest-time,
+[data-theme="grit"] .ex-name { font-weight: 800; }
+[data-theme="grit"] .sub { color: var(--muted); letter-spacing: .04em; }
+
+/* Surfaces: solid, square, a heavy edge on the left */
+[data-theme="grit"] .card {
+  background: var(--card);
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--edge);
+  border-radius: 2px;
+}
+[data-theme="grit"] .stat, [data-theme="grit"] .item, [data-theme="grit"] .badge,
+[data-theme="grit"] .plate, [data-theme="grit"] .plate-vis, [data-theme="grit"] .pitem,
+[data-theme="grit"] .pview img, [data-theme="grit"] .day-circle, [data-theme="grit"] .pcheck { border-radius: 2px; }
+[data-theme="grit"] .stat { background: #0a0a0a; border: 1px solid var(--border); }
+[data-theme="grit"] .item { background: #0a0a0a; border-color: var(--border); }
+[data-theme="grit"] .item.selected { box-shadow: none; border-color: var(--accent); background: rgba(158, 43, 28, 0.12); }
+[data-theme="grit"] .day.today .day-circle { box-shadow: none; outline: 1px solid var(--accent); }
+[data-theme="grit"] .mbar { border-radius: 0; background: #1a1917; height: 6px; }
+[data-theme="grit"] .mfill { border-radius: 0; }
+
+/* Tab bar: a flat slab fixed to the bottom */
+[data-theme="grit"] .tabbar {
+  bottom: 0; width: 100%; max-width: 480px; padding: 0 0 env(safe-area-inset-bottom, 0px);
+  background: #0a0a0a; -webkit-backdrop-filter: none; backdrop-filter: none;
+  border: 0; border-top: 1px solid var(--border); border-radius: 0; box-shadow: none; gap: 0;
+}
+[data-theme="grit"] .tab { border-radius: 0; padding: .7rem 0 .6rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: .6rem; }
+[data-theme="grit"] .tab.active { background: #121110; color: #fff; box-shadow: inset 0 2px 0 var(--accent); }
+[data-theme="grit"] .tab.active svg { transform: none; }
+
+/* Controls */
+[data-theme="grit"] .btn {
+  border-radius: 2px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; font-size: .85rem;
+}
+[data-theme="grit"] .btn.ghost { background: transparent; border: 1px solid var(--edge); color: var(--text); }
+[data-theme="grit"] .chip, [data-theme="grit"] .tool {
+  border-radius: 2px; background: #0a0a0a; border: 1px solid var(--edge); color: var(--muted);
+  text-transform: uppercase; letter-spacing: .1em; font-weight: 700; font-size: .7rem;
+}
+[data-theme="grit"] .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+[data-theme="grit"] .set-input, [data-theme="grit"] .select, [data-theme="grit"] .sheet .inp-date,
+[data-theme="grit"] .rpe, [data-theme="grit"] .check, [data-theme="grit"] .rest-btns button {
+  border-radius: 2px; background: #080808; border: 1px solid var(--edge);
+}
+
+/* Overlays */
+[data-theme="grit"] .overlay { background: rgba(0, 0, 0, 0.88); -webkit-backdrop-filter: none; backdrop-filter: none; }
+[data-theme="grit"] .sheet { background: #0b0b0b; border: 1px solid var(--edge); border-radius: 2px; }
+[data-theme="grit"] .rest {
+  background: #0b0b0b; -webkit-backdrop-filter: none; backdrop-filter: none;
+  border: 1px solid var(--edge); border-left: 3px solid var(--accent); border-radius: 2px;
+}
+[data-theme="grit"] .update-banner {
+  background: #0b0b0b; -webkit-backdrop-filter: none; backdrop-filter: none;
+  border: 1px solid var(--edge); border-left: 3px solid var(--accent); border-radius: 2px;
+}
+[data-theme="grit"] .update-banner button { border-radius: 2px; text-transform: uppercase; letter-spacing: .1em; font-size: .72rem; }

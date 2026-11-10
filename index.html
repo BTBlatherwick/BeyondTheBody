@@ -4,7 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>GymApp</title>
-  <meta name="theme-color" content="#0d0d10">
+  <meta name="theme-color" content="#070707">
+  <script>
+    // Set the theme before the page draws, so there's no flash of the wrong look
+    try {
+      var s = JSON.parse(localStorage.getItem("settings"));
+      document.documentElement.setAttribute("data-theme", (s && s.theme) || "grit");
+    } catch (e) { document.documentElement.setAttribute("data-theme", "grit"); }
+  </script>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
