@@ -1,4 +1,11 @@
 // =====================================================================
+// APP VERSION
+// Change this number every time you upload new files to GitHub.
+// Phones check it, and show an "Update available" banner when it changes.
+// =====================================================================
+const APP_VERSION = "1.4.0";
+
+// =====================================================================
 // SMALL HELPERS
 // =====================================================================
 function $(id) { return document.getElementById(id); }
@@ -2522,3 +2529,57 @@ if ("serviceWorker" in navigator &&
     (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
   navigator.serviceWorker.register("sw.js").catch(function () {});
 }
+
+// =====================================================================
+// UPDATE CHECK
+// Fetches app.js fresh from the server, reads the version number out of it,
+// and compares it with the version this phone is running.
+// =====================================================================
+function versionFrom(text) {
+  const m = /const APP_VERSION = "([^"]+)"/.exec(String(text));
+  return m ? m[1] : null;
+}
+
+function showUpdateBanner(newVersion) {
+  $("update-text").textContent = "Update available (v" + newVersion + ")";
+  $("update-banner").classList.add("show");
+}
+
+let lastUpdateCheck = 0;
+function checkForUpdate(manual) {
+  if (typeof fetch !== "function") return Promise.resolve(null);
+  const now = Date.now();
+  if (!manual && now - lastUpdateCheck < 60000) return Promise.resolve(null);   // at most once a minute
+  lastUpdateCheck = now;
+
+  return fetch("app.js?check=" + now, { cache: "no-store" })
+    .then(function (res) { return res.ok ? res.text() : null; })
+    .then(function (text) {
+      const latest = versionFrom(text);
+      if (!latest) return "unknown";
+      if (latest !== APP_VERSION) { showUpdateBanner(latest); return "update"; }
+      return "current";
+    })
+    .catch(function () { return "offline"; });
+}
+
+$("update-reload").addEventListener("click", function () { location.reload(); });
+$("update-dismiss").addEventListener("click", function () { $("update-banner").classList.remove("show"); });
+
+$("version-check").addEventListener("click", function () {
+  $("version-status").textContent = "Checking…";
+  checkForUpdate(true).then(function (r) {
+    $("version-status").textContent =
+      r === "update" ? "A new version is ready. Tap Reload in the banner." :
+      r === "current" ? "You have the latest version." :
+      r === "offline" ? "Couldn’t check. Are you online?" : "Couldn’t read the version.";
+  });
+});
+
+$("version-label").textContent = "Version " + APP_VERSION;
+
+// Check when the app starts and whenever you come back to it
+checkForUpdate(false);
+document.addEventListener("visibilitychange", function () {
+  if (document.visibilityState === "visible") checkForUpdate(false);
+});

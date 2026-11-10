@@ -123,6 +123,15 @@
       <input type="file" id="import-file" accept=".json,application/json" hidden>
     </div>
 
+    <h2>About</h2>
+    <div class="card">
+      <div class="feed-meta" id="version-label"></div>
+      <div class="btn-row">
+        <button class="btn ghost" id="version-check">Check for updates</button>
+      </div>
+      <div class="feed-meta" id="version-status" style="margin-top:.5rem"></div>
+    </div>
+
     <h2>Equipment</h2>
     <div id="equipment-list"></div>
     <p class="count" id="count"></p>
@@ -166,6 +175,14 @@
       Gym
     </button>
   </nav>
+
+  <div class="update-banner" id="update-banner">
+    <span id="update-text">Update available</span>
+    <div class="rest-btns">
+      <button id="update-reload">Reload</button>
+      <button id="update-dismiss">Later</button>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

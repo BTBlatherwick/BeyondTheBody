@@ -490,3 +490,28 @@ h2 {
 .hist-row { padding: .7rem 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
 .hist-top { display: flex; justify-content: space-between; gap: .5rem; font-size: .9rem; }
 .hist-sets { margin-top: .3rem; font-size: .85rem; color: var(--muted); line-height: 1.5; }
+
+/* Update banner: slides in above the tab bar when a new version is online */
+.update-banner {
+  display: none;
+  position: fixed;
+  left: 12px; right: 12px;
+  bottom: calc(84px + env(safe-area-inset-bottom));
+  z-index: 30;
+  align-items: center;
+  justify-content: space-between;
+  gap: .6rem;
+  padding: .7rem .9rem;
+  border-radius: 16px;
+  background: rgba(30, 30, 36, 0.92);
+  border: 1px solid var(--accent);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  font-size: .85rem;
+}
+.update-banner.show { display: flex; }
+.update-banner button {
+  border: 0; border-radius: 10px; padding: .45rem .8rem;
+  background: var(--accent); color: #fff; font: inherit; font-weight: 600;
+}
+.update-banner button#update-dismiss { background: rgba(255,255,255,0.1); }
