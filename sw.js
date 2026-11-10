@@ -1,7 +1,7 @@
 // GymApp service worker: keeps a copy of the app so it opens offline.
 // It tries the network first, so while you are editing the code you always see your latest changes.
 // Bump the version number if you ever need to force a clean cache.
-const CACHE = "gymapp-v1.6.0";
+const CACHE = "gymapp-v1.8.0";
 const FILES = ["./", "index.html", "style.css", "app.js", "manifest.json",
                "icon-192.png", "icon-512.png", "apple-touch-icon.png"];
 

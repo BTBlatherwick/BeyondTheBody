@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "1.6.0";
+const APP_VERSION = "1.8.0";
 
 // =====================================================================
 // SMALL HELPERS
@@ -45,13 +45,18 @@ const REST_OPTIONS = [45, 60, 90, 120, 180, 240];
 
 let settings = load("settings", { units: "kg", rest: 90 });
 if (!settings.warmup) settings.warmup = "off";
-if (!settings.theme) settings.theme = "grit";
+// Everyone moves to the new Clean look once. After that, whatever you pick is remembered.
+if (settings.themeV !== 2) {
+  settings.theme = "clean";
+  settings.themeV = 2;
+  save("settings", settings);
+}
 
 // The look of the app: "grit" (stark, concrete, no glass) or "classic" (the glassy one)
 function applyTheme() {
   document.documentElement.setAttribute("data-theme", settings.theme);
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute("content", settings.theme === "grit" ? "#070707" : "#0d0d10");
+  if (meta) meta.setAttribute("content", { clean: "#000000", grit: "#070707", classic: "#0d0d10" }[settings.theme] || "#000000");
 }
 applyTheme();
 let restMap = load("restMap", {});   // per-exercise rest times, e.g. { "Deadlift": 180 }
@@ -73,7 +78,7 @@ function renderSettings() {
     return h + "</div></div>";
   }
   $("settings-card").innerHTML =
-    group("Theme", "theme", [["grit", "Grit"], ["classic", "Classic"]]) +
+    group("Theme", "theme", [["clean", "Clean"], ["grit", "Grit"], ["classic", "Classic"]]) +
     group("Units", "units", [["kg", "kg"], ["lb", "lb"]]) +
     group("Default rest time", "rest", [[60, "1:00"], [90, "1:30"], [120, "2:00"], [180, "3:00"]]) +
     group("Auto warm-up sets", "warmup", [["off", "Off"], ["barbell", "Barbell lifts"]]);
@@ -348,7 +353,62 @@ function renderBadges() {
   });
 }
 
+// The segmented bar: one segment per training day in your goal, filled as you complete them
+function renderWeekbar() {
+  const goalDays = Math.max(1, Math.min(7, Number(goals.days) || 3));
+  const b = weekBounds(0);
+  const doneDays = new Set(getWorkoutDates().filter(function (d) { return d >= b.start && d <= b.end; })).size;
+  const n = calcStreak(getWorkoutDates());
+
+  let segs = "";
+  for (let i = 0; i < goalDays; i++) segs += `<i class="${i < doneDays ? "on" : ""}"></i>`;
+  $("weekbar").innerHTML = `<div class="wb-segs">${segs}</div>
+    <div class="wb-text"><span>${doneDays} of ${goalDays} completed this week</span>
+    <span>Streak: ${n} ${n === 1 ? "day" : "days"}</span></div>`;
+}
+
+// The big "Next workout" card: what's in it and roughly how long it takes
+function renderHero() {
+  const exercises = workout.exercises.length;
+  let sets = 0;
+  workout.exercises.forEach(function (ex) {
+    ex.sets.forEach(function (s) { if (!s.warmup) sets++; });
+  });
+  const mins = Math.max(5, Math.round(sets * 3.5 / 5) * 5);   // about 3.5 minutes a set, rest included
+  $("hero-label").textContent = goals.goal || "";
+  $("next-meta").textContent = exercises
+    ? exercises + (exercises === 1 ? " exercise" : " exercises") + " • " + sets + (sets === 1 ? " set" : " sets") + " • ~" + mins + " mins"
+    : "Add some exercises to get started";
+  $("home-gym-sub").textContent = selected.length + (selected.length === 1 ? " item of equipment" : " items of equipment");
+}
+
+$("alt-tiles").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-home]");
+  if (!b) return;
+  const a = b.dataset.home;
+
+  if (a === "shuffle") { showTab("workout"); generateWorkout(); return; }
+
+  if (a === "routines") {
+    showTab("workout");
+    const r = $("routines-card");
+    if (r && r.scrollIntoView) r.scrollIntoView();
+    return;
+  }
+
+  if (a === "manual") {
+    const started = workout.exercises.some(function (ex) { return ex.sets.some(function (s) { return s.done; }); });
+    if (started && !confirm("Replace your current workout? Ticked sets will be lost.")) return;
+    workout = newWorkout({ name: "Custom Workout", exercises: [] });
+    saveWorkout();
+    renderWorkout();
+    showTab("workout");
+    openAddExercise();
+  }
+});
+
 function refreshHome() {
+  renderWeekbar();
   renderWeek();
   renderStreak();
   renderHeatmap();
@@ -1169,6 +1229,7 @@ function renderWorkout() {
           <button class="tool" data-action="swap" data-ex="${ei}">Swap</button>
           <button class="tool" data-action="skip" data-ex="${ei}">Skip</button>
         </div>
+        <button class="more" data-action="menu" data-ex="${ei}" aria-label="More options for ${esc(ex.name)}">•••</button>
       </div>
       <div class="hint">${hintFor(ex, allStats[ex.name])}</div>
       <div class="set-row w5 set-head"><div>SET</div><div>${unit().toUpperCase()}</div><div>REPS</div><div>RPE</div><div></div></div>`;
@@ -1208,9 +1269,10 @@ function renderWorkout() {
     <button class="btn" data-action="finish">Finish workout</button>`;
   el.innerHTML = html;
 
-  $("workout-title").textContent = workout.name.toUpperCase();
+  $("workout-title").textContent = workout.name;
   $("workout-progress").textContent = doneCount + " of " + totalCount + " sets done" + (isDeload() ? " · Easier week" : "");
   $("next-workout").textContent = workout.name;
+  renderHero();
 }
 
 // Typing in a weight, reps, RPE or note box
@@ -1249,6 +1311,12 @@ $("workout-list").addEventListener("click", function (e) {
   if (action === "finish") { finishWorkout(); return; }
   if (action === "addex") { openAddExercise(); return; }
   if (action === "saveroutine") { saveRoutine(); return; }
+
+  if (action === "menu") {
+    const card = btn.closest ? btn.closest(".card") : null;
+    if (card) card.classList.toggle("menu-open");
+    return;
+  }
 
   const ei = Number(btn.dataset.ex);
   const ex = workout.exercises[ei];
@@ -1559,18 +1627,27 @@ function renderFeed() {
         (ex.note ? `<div class="feed-note">${esc(ex.note)}</div>` : "");
     }).join("");
 
+    const names = w.exercises.map(function (ex) { return ex.name; });
+    const summary = names.length <= 3 ? names.join(", ") : names.slice(0, 3).join(", ") + " and " + (names.length - 3) + " more";
+    const dur = !w.minutes ? "-" : (w.minutes >= 60 ? Math.floor(w.minutes / 60) + " h " + (w.minutes % 60) + " min" : w.minutes + " min");
+
     const date = new Date(w.date + "T00:00:00").toLocaleDateString("en-GB", {
       weekday: "short", day: "numeric", month: "short"
     });
 
-    return `<div class="card">
+    return `<div class="card feed-card">
       <div class="feed-top">
-        <div class="card-label">${date}</div>
-        <div class="feed-meta">${w.minutes ? w.minutes + " min" : ""}</div>
+        <div class="feed-who"><span class="avatar">G</span><div class="card-label">${date}</div></div>
       </div>
       <div class="big">${esc(w.name)}</div>
-      <div class="feed-meta">${t.sets} sets · ${Math.round(toDisp(t.volume)).toLocaleString()} ${unit()} lifted</div>
-      <div class="feed-lines">${lines}</div>
+      <div class="feed-meta feed-summary">${esc(summary)}</div>
+      <div class="feed-stats">
+        <div><span>Duration</span><b>${dur}</b></div>
+        <div><span>Volume</span><b>${Math.round(toDisp(t.volume)).toLocaleString()} ${unit()}</b></div>
+        <div><span>Sets</span><b>${t.sets}</b></div>
+        <div><span>Exercises</span><b>${w.exercises.length}</b></div>
+      </div>
+      <details class="feed-detail"><summary>Sets and notes</summary><div class="feed-lines">${lines}</div></details>
       <div class="feed-actions">
         <button class="tool" data-a="feed-edit" data-i="${item.i}">Edit</button>
         <button class="tool" data-a="feed-del" data-i="${item.i}">Delete</button>
@@ -2844,6 +2921,301 @@ loadPhotos();
 
 
 // =====================================================================
+// PIN LOCK
+// A 4-digit PIN that covers the app when you open it, and again if you leave it
+// for a while. Only a scrambled version of the PIN (a "hash") is stored, never
+// the PIN itself.
+// Be realistic about it: this keeps people who pick up your phone out. It does
+// not encrypt your data, and someone with technical skill and time could get around it.
+// =====================================================================
+const PIN_KEY = "pin";
+const PIN_STATE_KEY = "pinState";
+if (settings.autolock === undefined) settings.autolock = 5;   // minutes away before it locks again
+
+let pinRecord = load(PIN_KEY, null);   // { salt, algo, hash }
+if (!(pinRecord && typeof pinRecord.salt === "string" && typeof pinRecord.hash === "string")) {
+  pinRecord = null;
+  document.documentElement.removeAttribute("data-locked");   // a damaged PIN must never lock you out for good
+}
+function pinIsSet() { return pinRecord !== null; }
+
+function hasSubtle() {
+  return typeof crypto !== "undefined" && crypto.subtle && typeof crypto.subtle.digest === "function";
+}
+// Backup scrambler for the rare case the browser has no crypto (plain http on a network address)
+function cyrb53(str) {
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
+}
+function randomSalt() {
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    return Array.from(crypto.getRandomValues(new Uint8Array(16))).map(function (b) { return ("0" + b.toString(16)).slice(-2); }).join("");
+  }
+  return Math.random().toString(16).slice(2) + Date.now().toString(16);
+}
+function hashPin(pin, salt, algo) {
+  const text = salt + ":" + pin;
+  if (algo === "sha256" && hasSubtle()) {
+    return crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)).then(function (buf) {
+      return Array.from(new Uint8Array(buf)).map(function (b) { return ("0" + b.toString(16)).slice(-2); }).join("");
+    });
+  }
+  return Promise.resolve(cyrb53(text));
+}
+function checkPin(pin) {
+  return hashPin(pin, pinRecord.salt, pinRecord.algo).then(function (h) { return h === pinRecord.hash; });
+}
+
+// Too many wrong tries? You have to wait, and the wait doubles each time.
+function pinState() {
+  const s = load(PIN_STATE_KEY, { fails: 0, until: 0 });
+  return { fails: Number(s.fails) || 0, until: Number(s.until) || 0 };
+}
+function lockWaitMs() { return Math.max(0, pinState().until - Date.now()); }
+function registerFail() {
+  const s = pinState();
+  s.fails++;
+  if (s.fails >= 5) s.until = Date.now() + Math.min(3600, 30 * Math.pow(2, s.fails - 5)) * 1000;
+  save(PIN_STATE_KEY, s);
+  return s;
+}
+function clearFails() { save(PIN_STATE_KEY, { fails: 0, until: 0 }); }
+
+// ----- the number pad -----
+let pinResolve = null;     // waiting for 4 digits; called with the PIN (or null if cancelled)
+let pinEntered = "";
+let pinDisabledUntil = 0;
+let pinTimer = null;
+
+function renderPinDots() {
+  const dots = $("lock-dots").children;
+  for (let i = 0; i < dots.length; i++) dots[i].classList.toggle("on", i < pinEntered.length);
+}
+
+// Shows the pad and waits for 4 digits.
+// o: { title, sub, error, cancellable, unlock, lockedFor }
+function askPin(o) {
+  return new Promise(function (resolve) {
+    pinResolve = resolve;
+    pinEntered = "";
+    clearInterval(pinTimer);
+
+    const lock = $("lock");
+    lock.classList.add("show");
+    lock.classList.toggle("cancellable", !!o.cancellable);
+    lock.classList.toggle("unlock", !!o.unlock);
+    $("lock-title").textContent = o.title;
+    $("lock-sub").textContent = o.sub || "";
+    $("lock-sub").classList.toggle("err", !!o.error);
+    renderPinDots();
+
+    if (o.error) {
+      $("lock-dots").classList.remove("shake");
+      void $("lock-dots").offsetWidth;   // lets the shake play again
+      $("lock-dots").classList.add("shake");
+    }
+
+    if (o.lockedFor > 0) {
+      pinDisabledUntil = Date.now() + o.lockedFor;
+      const tick = function () {
+        const left = Math.ceil((pinDisabledUntil - Date.now()) / 1000);
+        if (left > 0) {
+          $("lock-sub").classList.add("err");
+          $("lock-sub").textContent = "Too many tries. Wait " + (left >= 60 ? Math.ceil(left / 60) + " min" : left + "s") + ".";
+        } else {
+          clearInterval(pinTimer);
+          $("lock-sub").classList.remove("err");
+          $("lock-sub").textContent = "Try again";
+        }
+      };
+      tick();
+      pinTimer = setInterval(tick, 250);
+    } else {
+      pinDisabledUntil = 0;
+    }
+  });
+}
+
+function hidePin() {
+  clearInterval(pinTimer);
+  pinResolve = null;
+  pinEntered = "";
+  $("lock").classList.remove("show", "cancellable", "unlock");
+  document.documentElement.removeAttribute("data-locked");
+}
+
+function pinPress(k) {
+  if (!pinResolve || Date.now() < pinDisabledUntil) return;
+  if (k === "back") pinEntered = pinEntered.slice(0, -1);
+  else if (/^\d$/.test(k) && pinEntered.length < 4) pinEntered += k;
+  renderPinDots();
+  if (typeof navigator.vibrate === "function") { try { navigator.vibrate(8); } catch (e) {} }
+
+  if (pinEntered.length === 4) {
+    const done = pinResolve, value = pinEntered;
+    pinResolve = null;
+    setTimeout(function () { done(value); }, 120);   // a moment so you see the 4th dot fill
+  }
+}
+
+$("lock-keys").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-k]");
+  if (b) pinPress(b.dataset.k);
+});
+$("lock-cancel").addEventListener("click", function () {
+  if (!$("lock").classList.contains("cancellable")) return;   // the unlock screen can never be cancelled
+  if (pinResolve) { const done = pinResolve; pinResolve = null; done(null); }
+});
+document.addEventListener("keydown", function (e) {
+  if (!$("lock").classList.contains("show")) return;
+  if (/^\d$/.test(e.key)) pinPress(e.key);
+  else if (e.key === "Backspace") pinPress("back");
+  else if (e.key === "Escape") $("lock-cancel").click();
+});
+
+// ----- flows -----
+// Ask until the right PIN is typed. Resolves true, or false if cancelled.
+async function verifyPin(o) {
+  let error = "";
+  for (;;) {
+    const pin = await askPin({
+      title: o.title, sub: error || "Enter your 4-digit PIN", error: !!error,
+      cancellable: !!o.cancellable, unlock: !!o.unlock, lockedFor: lockWaitMs()
+    });
+    if (pin === null) return false;
+    if (lockWaitMs() > 0) continue;
+    if (await checkPin(pin)) { clearFails(); return true; }
+
+    const s = registerFail();
+    error = s.fails >= 5 ? "Wrong PIN." : "Wrong PIN. " + (5 - s.fails) + (5 - s.fails === 1 ? " try" : " tries") + " left before a wait.";
+  }
+}
+
+async function setNewPin() {
+  let error = "";
+  for (;;) {
+    const a = await askPin({ title: "Choose a PIN", sub: error || "Pick 4 digits", error: !!error, cancellable: true });
+    if (a === null) { hidePin(); return false; }
+    const b = await askPin({ title: "Confirm PIN", sub: "Enter it once more", cancellable: true });
+    if (b === null) { hidePin(); return false; }
+    if (a !== b) { error = "Those didn’t match. Try again."; continue; }
+
+    const salt = randomSalt();
+    const algo = hasSubtle() ? "sha256" : "fallback";
+    const hash = await hashPin(a, salt, algo);
+    pinRecord = { salt: salt, algo: algo, hash: hash };
+    save(PIN_KEY, pinRecord);
+    clearFails();
+    hidePin();
+    return true;
+  }
+}
+
+let appLocked = false;
+async function lockApp() {
+  if (!pinIsSet() || appLocked) return;
+  appLocked = true;
+  document.documentElement.setAttribute("data-locked", "1");
+  // Only a correct PIN gets out of this loop
+  while (!(await verifyPin({ title: "Enter PIN", unlock: true }))) { /* try again */ }
+  hidePin();
+  appLocked = false;
+}
+
+// Forgot it? The only way back in is to wipe the app on this phone, then restore a backup.
+$("lock-forgot").addEventListener("click", function () {
+  if (!confirm("Forgot your PIN?\n\nThe only way back in is to erase everything the app has saved on this phone (workouts, body log, photos). You can then restore a backup file.\n\nErase everything?")) return;
+  if (!confirm("Last check: this can’t be undone. Erase all app data on this phone?")) return;
+  let finished = false;
+  function finish() {
+    if (finished) return;
+    finished = true;
+    try { localStorage.clear(); } catch (e) {}
+    location.reload();
+  }
+  try {
+    if (photoStore.db) photoStore.db.close();
+    const req = indexedDB.deleteDatabase("gymapp-photos");
+    req.onsuccess = req.onerror = req.onblocked = finish;
+    setTimeout(finish, 1500);
+  } catch (e) { finish(); }
+});
+
+// Lock again after you've been away for a while
+let hiddenAt = 0;
+document.addEventListener("visibilitychange", function () {
+  if (document.visibilityState === "hidden") { hiddenAt = Date.now(); return; }
+  if (!hiddenAt || !pinIsSet()) { hiddenAt = 0; return; }
+  const away = Date.now() - hiddenAt;
+  hiddenAt = 0;
+  if (away >= (Number(settings.autolock) || 0) * 60000) lockApp();
+});
+
+// ----- the Security card on the Gym tab -----
+function renderPin() {
+  const on = pinIsSet();
+  let html = `<div class="card-label">PIN lock</div>
+    <div class="big">${on ? "On" : "Off"}</div>
+    <div class="feed-meta" style="margin-top:.3rem">${on
+      ? "The app asks for your PIN when you open it."
+      : "Add a 4-digit PIN so nobody can open your training and photos."}</div>`;
+
+  if (on) {
+    html += `<div class="card-label" style="margin-top:.9rem">Lock again after</div><div class="chips">` +
+      [[0, "Straight away"], [1, "1 min"], [5, "5 min"], [15, "15 min"]].map(function (o) {
+        return `<button class="chip${Number(settings.autolock) === o[0] ? " on" : ""}" data-al="${o[0]}">${o[1]}</button>`;
+      }).join("") + `</div>
+      <div class="btn-row">
+        <button class="btn ghost" data-pin="change">Change PIN</button>
+        <button class="btn ghost" data-pin="off">Turn off</button>
+      </div>`;
+  } else {
+    html += `<button class="btn" data-pin="set">Set a PIN</button>`;
+  }
+
+  html += `<div class="feed-meta" style="margin-top:.8rem">This keeps people who pick up your phone out. It isn’t encryption. Your PIN isn’t saved in backup files, so a restored backup on another phone has no PIN.</div>`;
+  $("pin-card").innerHTML = html;
+}
+
+$("pin-card").addEventListener("click", async function (e) {
+  const al = e.target.closest("[data-al]");
+  if (al) {
+    settings.autolock = Number(al.dataset.al);
+    save("settings", settings);
+    renderPin();
+    return;
+  }
+  const b = e.target.closest("[data-pin]");
+  if (!b) return;
+  const act = b.dataset.pin;
+
+  if (act === "set") {
+    await setNewPin();
+  } else if (act === "change") {
+    if (await verifyPin({ title: "Enter current PIN", cancellable: true })) await setNewPin();
+    else hidePin();
+  } else if (act === "off") {
+    if (await verifyPin({ title: "Enter PIN to turn off", cancellable: true })) {
+      pinRecord = null;
+      try { localStorage.removeItem(PIN_KEY); } catch (err) {}
+      clearFails();
+    }
+    hidePin();
+  }
+  renderPin();
+});
+
+if (pinIsSet()) lockApp();   // locked from the very first moment
+
+
+// =====================================================================
 // BACKUP AND RESTORE
 // Your data lives in this browser only. A backup is a .json file you can keep safe.
 // =====================================================================
@@ -2984,6 +3356,7 @@ function renderAll() {
   renderBodyForm();
   renderPhotoForm();
   renderPhotos();
+  renderPin();
   renderBackupStatus();
 }
 
