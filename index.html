@@ -42,6 +42,8 @@
     <div class="weekbar" id="weekbar"></div>
     <div class="week" id="week-strip"></div>
 
+    <div class="card obj-card" id="objectives"></div>
+
     <div class="card hero">
       <span class="pill">Next workout</span>
       <div class="hero-body">
@@ -61,6 +63,10 @@
       <button class="tile" data-home="routines">
         <span class="tile-ic"><svg viewBox="0 0 24 24"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg></span>
         <span><span class="tile-t">Routines</span><span class="tile-s">Your saved workouts</span></span>
+      </button>
+      <button class="tile" data-home="timer">
+        <span class="tile-ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2"/><path d="M9 2h6"/></svg></span>
+        <span><span class="tile-t">Timer</span><span class="tile-s">Tabata, EMOM, custom</span></span>
       </button>
       <button class="tile" data-home="manual">
         <span class="tile-ic"><svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></span>
@@ -101,9 +107,11 @@
   <section class="screen" id="workout">
     <h1 id="workout-title">Workout</h1>
     <p class="sub" id="workout-progress"></p>
+    <div class="ready" id="ready-row"></div>
     <button class="btn gen" id="generate-btn">🎲 Generate workout</button>
     <p class="gen-status" id="gen-status"></p>
     <div id="routines-card"></div>
+    <button class="link-btn" id="open-timer" style="margin:0 0 .8rem">⏱ Interval timer (Tabata, EMOM)</button>
     <div id="workout-list"></div>
   </section>
 
@@ -115,6 +123,12 @@
 
     <h2>This week’s training</h2>
     <div class="card" id="muscle-card"></div>
+
+    <h2>Weekly trend</h2>
+    <div class="card" id="weekly-card"></div>
+
+    <h2>Achievements</h2>
+    <div class="card" id="ach-card"></div>
 
     <h2>Exercise trend</h2>
     <div class="card">
@@ -153,6 +167,12 @@
     <h2>Goals</h2>
     <div class="card" id="goals-card"></div>
 
+    <h2>Targets</h2>
+    <div class="card" id="targets-card"></div>
+
+    <h2>Programme</h2>
+    <div class="card" id="programme-card"></div>
+
     <h2>Settings</h2>
     <div class="card" id="settings-card"></div>
 
@@ -181,10 +201,21 @@
       <div class="feed-meta" id="version-label"></div>
       <div class="btn-row">
         <button class="btn ghost" id="version-check">Check for updates</button>
+        <button class="btn ghost" id="share-app">Share the app</button>
+        <button class="btn ghost" id="setup-again">Run the welcome setup again</button>
       </div>
       <div class="feed-meta" id="version-status" style="margin-top:.5rem"></div>
     </div>
 
+  </section>
+
+  <section class="screen" id="library">
+    <h1>Library</h1>
+    <p class="sub">Every exercise, with your history for each.</p>
+    <input class="set-input" id="lib-q" type="search" placeholder="Search exercises" autocomplete="off" style="text-align:left;padding-left:.8rem">
+    <div class="chips lib-chips" id="lib-chips"></div>
+    <div class="feed-meta" id="lib-count"></div>
+    <div id="lib-list"></div>
   </section>
 
   <!-- ===== REST TIMER ===== -->
@@ -199,6 +230,9 @@
     </div>
   </div>
 
+  <!-- ===== INTERVAL TIMER ===== -->
+  <div class="overlay iv" id="interval"><div class="sheet" id="iv-sheet"></div></div>
+
   <!-- ===== SHEET (finish summary and editor) ===== -->
   <div class="overlay" id="overlay"><div class="sheet" id="sheet"></div></div>
 
@@ -211,6 +245,10 @@
     <button class="tab" data-target="workout">
       <svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg>
       Workout
+    </button>
+    <button class="tab" data-target="library">
+      <svg viewBox="0 0 24 24"><path d="M5 4h10a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h10"/></svg>
+      Library
     </button>
     <button class="tab" data-target="progress">
       <svg viewBox="0 0 24 24"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="15 7 21 7 21 13"/></svg>
@@ -240,6 +278,8 @@
     </div>
     <button class="link-btn" id="lock-forgot">Forgot PIN?</button>
   </div>
+
+  <div class="welcome" id="welcome"></div>
 
   <div class="update-banner" id="update-banner">
     <span id="update-text">Update available</span>

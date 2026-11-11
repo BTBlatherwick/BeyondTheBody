@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "2.1.0";
+const APP_VERSION = "2.4.0";
 
 // =====================================================================
 // SMALL HELPERS
@@ -66,7 +66,7 @@ function toDisp(kg) { return settings.units === "lb" ? kg / KG_PER_LB : kg; }
 function fromDisp(v) { return settings.units === "lb" ? v * KG_PER_LB : v; }
 function fmt(n) { return String(Number(n.toFixed(2))); }
 function fmtW(kg) { return fmt(toDisp(parseFloat(kg) || 0)); }   // kg in, display number out
-function restFor(name) { return restMap[name] || settings.rest; }
+function restFor(name) { return restMap[name] || coachRest(name) || settings.rest; }
 
 function renderSettings() {
   function group(label, key, options) {
@@ -114,6 +114,7 @@ function showTab(targetId) {
   document.querySelector('[data-target="' + targetId + '"]').classList.add("active");
 
   if (targetId === "progress") renderProgress();
+  if (targetId === "library") renderLibrary();
 
   save("lastTab", targetId);
   window.scrollTo(0, 0);
@@ -145,7 +146,7 @@ const equipment = {
   "Balls & accessories": ["Stability ball", "Medicine ball", "Suspension trainer", "Gymnastic rings", "Ab wheel",
                           "Core sliders", "Dip belt", "Weight vest"],
   "Resistance bands": ["Resistance bands", "Mini loop bands"],
-  "Cardio & recovery": ["Treadmill", "Skipping rope", "Foam roller"]
+  "Cardio & recovery": ["Treadmill", "Exercise bike", "Rowing machine", "Elliptical", "Skipping rope", "Foam roller"]
 };
 
 let selected = load("selectedEquipment", []);
@@ -257,20 +258,177 @@ function toggleEquipment(name) {
 
 // =====================================================================
 // GOALS
+// The goal decides the sets, reps, rest times, weekly volume and cardio.
+// On top of that: focus muscles, an avoid list (injuries), targets with dates,
+// a multi-week programme, and how you feel today.
 // =====================================================================
+const GOAL_PROFILES = {
+  "Build muscle": {
+    blurb: "Size first. Moderate weights, 6-15 reps, and enough weekly sets for every muscle.",
+    cReps: "6-10", iReps: "10-15", cSets: [3, 4, 4], iSets: [2, 3, 3], restC: 120, restI: 75, vol: 1.0, cardio: false, emphasis: []
+  },
+  "Get stronger": {
+    blurb: "Heavy compound lifts for 3-6 reps with long rests, and fewer extras.",
+    cReps: "3-6", iReps: "8-10", cSets: [3, 4, 5], iSets: [2, 3, 3], restC: 180, restI: 90, vol: 0.75, cardio: false, emphasis: []
+  },
+  "Lose fat": {
+    blurb: "Full-body sessions, 10-15 reps, short rests and a cardio finisher. Keeps muscle while you cut.",
+    cReps: "10-12", iReps: "12-15", cSets: [3, 3, 4], iSets: [2, 3, 3], restC: 75, restI: 45, vol: 0.8, cardio: true, emphasis: []
+  },
+  "Look athletic": {
+    blurb: "A V-taper look: extra shoulders, upper back, chest and core, with a solid base of legs and arms.",
+    cReps: "6-10", iReps: "10-15", cSets: [3, 4, 4], iSets: [2, 3, 3], restC: 105, restI: 60, vol: 1.0, cardio: false,
+    emphasis: ["shoulders", "back", "chest", "rear", "core"]
+  },
+  "Conditioning": {
+    blurb: "Work capacity and stamina: higher reps, very short rests and a cardio finisher.",
+    cReps: "12-15", iReps: "15-20", cSets: [3, 3, 4], iSets: [2, 2, 3], restC: 45, restI: 30, vol: 0.8, cardio: true, emphasis: []
+  },
+  "General fitness": {
+    blurb: "Balanced strength and health. Steady reps, every muscle covered, some cardio.",
+    cReps: "8-12", iReps: "12-15", cSets: [3, 3, 4], iSets: [2, 3, 3], restC: 90, restI: 60, vol: 0.8, cardio: true, emphasis: []
+  }
+};
+
 const goalOptions = {
-  goal:       { label: "Main goal",      options: ["Build muscle", "Get stronger", "Lose fat", "General fitness"] },
+  goal:       { label: "Main goal",      options: Object.keys(GOAL_PROFILES) },
   experience: { label: "Experience",     options: ["Beginner", "Intermediate", "Advanced"] },
   days:       { label: "Days per week",  options: ["2", "3", "4", "5", "6"] },
   minutes:    { label: "Session length", options: ["30", "45", "60", "90"], suffix: " min" }
 };
 
-let goals = load("goals", {
+// Things you may want to avoid, and the exercises that load them
+const AVOID_AREAS = {
+  "Shoulders":  /overhead|shoulder press|arnold|push press|pike|upright row|\bdips?\b|handstand|landmine press|kettlebell press|front raise|halo/i,
+  "Lower back": /deadlift|good morning|barbell row|pendlay|meadows|t-bar|rack pull|back extension|hyperextension|superman|swing|back squat|front squat|bent-over|sit-up|rollout|slam/i,
+  "Knees":      /squat|lunge|step-up|box jump|jump|leg extension|leg press|hack|pendulum|sissy|cossack|wall sit|burpee/i,
+  "Wrists":     /push-up|plank|handstand|front squat|rollout|body saw|fallout|pike|\bdips?\b|skull|barbell curl|ez bar curl|kettlebell/i,
+  "Elbows":     /skull|jm press|triceps|\bdips?\b|close-grip|diamond|preacher|zottman|drag curl|spider/i
+};
+
+function normGoals(g) {
+  if (!g || typeof g !== "object") g = {};
+  if (!GOAL_PROFILES[g.goal]) g.goal = "Build muscle";
+  if (!goalOptions.experience.options.includes(g.experience)) g.experience = "Beginner";
+  if (!goalOptions.days.options.includes(String(g.days))) g.days = "3";
+  if (!goalOptions.minutes.options.includes(String(g.minutes))) g.minutes = "60";
+  ["focus", "avoid", "targets"].forEach(function (k) { if (!Array.isArray(g[k])) g[k] = []; });
+  g.focus = g.focus.filter(function (m) { return typeof m === "string"; }).slice(0, 3);
+  g.targets = g.targets.filter(function (t) { return t && (t.type === "weight" || t.type === "lift") && isFinite(Number(t.goal)); }).slice(0, 4);
+  if (g.autoRest === undefined) g.autoRest = true;
+  if (!g.programme || typeof g.programme !== "object" || !g.programme.start) g.programme = null;
+  if (!g.readiness || typeof g.readiness !== "object") g.readiness = null;
+  return g;
+}
+
+let goals = normGoals(load("goals", {
   goal: "Build muscle",
   experience: "Beginner",
   days: "3",
   minutes: "60"
-});
+}));
+
+function goalProfile() { return GOAL_PROFILES[goals.goal] || GOAL_PROFILES["Build muscle"]; }
+
+function isAvoided(ex) {
+  return goals.avoid.some(function (area) {
+    const re = AVOID_AREAS[area];
+    return re && re.test(ex.name);
+  });
+}
+
+// How you said you feel today ("fresh", "normal", "tired"), or null if you haven't said
+function readinessToday() {
+  const r = goals.readiness;
+  return r && r.date === dateKey(new Date()) ? r.level : null;
+}
+
+// Weekly sets to aim for, per muscle: [low, high]
+function weeklyTargets() {
+  const p = goalProfile();
+  const level = { "Beginner": 0, "Intermediate": 1, "Advanced": 2 }[goals.experience] || 0;
+  const base = [[6, 10], [10, 14], [12, 18]][level];
+  const out = {};
+  MUSCLES.forEach(function (m) {
+    const key = m[0];
+    let mult = p.vol;
+    if (p.emphasis.includes(key)) mult *= 1.25;
+    if (goals.focus.includes(key)) mult *= 1.4;
+    if (key === "calves" || key === "rear" || key === "core") mult *= 0.7;
+    out[key] = [Math.max(3, Math.round(base[0] * mult)), Math.max(4, Math.round(base[1] * mult))];
+  });
+  return out;
+}
+
+// ----- The multi-week programme: Build, then Push, then an easier Deload week -----
+function programmeInfo() {
+  const p = goals.programme;
+  if (!p) return null;
+  const weeks = Number(p.weeks) || 8;
+  const week = Math.floor(daysBetween(p.start, dateKey(new Date())) / 7) + 1;
+  if (week > weeks) return { done: true, weeks: weeks, week: weeks, name: "Done", tip: "" };
+  const w = Math.max(1, week);
+  const buildEnd = Math.ceil((weeks - 1) / 2);
+  if (w === weeks) return { done: false, weeks: weeks, week: w, name: "Deload", tip: "Easy week. Lighter weights and fewer sets so your body can recover." };
+  if (w <= buildEnd) return { done: false, weeks: weeks, week: w, name: "Build", tip: "Leave 2-3 reps in the tank. Focus on form and adding reps." };
+  return { done: false, weeks: weeks, week: w, name: "Push", tip: "Go harder: 1-2 reps in the tank, an extra set on the big lifts, add weight when you hit the top reps." };
+}
+
+// ----- Targets: a bodyweight or a lift, with an optional date -----
+function bestE1rm(name) {
+  let best = 0;
+  getHistory().forEach(function (w) {
+    w.exercises.forEach(function (ex) {
+      if (ex.name !== name) return;
+      ex.sets.forEach(function (s) { best = Math.max(best, e1rm(parseFloat(s.weight) || 0, parseInt(s.reps) || 0)); });
+    });
+  });
+  return best;
+}
+
+function latestBodyWeight() {
+  for (let i = bodyLog.length - 1; i >= 0; i--) if (bodyLog[i].weight > 0) return bodyLog[i].weight;
+  return 0;
+}
+
+// Where is this target now? { cur, pct (0 to 1), left (days or null), status, text }
+function targetProgress(t) {
+  const today = dateKey(new Date());
+  let cur, goalVal, curText, goalText;
+  if (t.type === "weight") {
+    cur = latestBodyWeight();
+    goalVal = Number(t.goal);
+    curText = cur ? fmtW(cur) + " " + unit() : "no weigh-in yet";
+    goalText = fmtW(goalVal) + " " + unit();
+  } else {
+    const reps = Math.max(1, Number(t.reps) || 1);
+    cur = bestE1rm(t.exercise);
+    goalVal = e1rm(Number(t.goal), reps);
+    const est = reps === 1 ? cur : cur / (1 + Math.min(reps, 15) / 30);
+    curText = cur ? "≈ " + fmtW(est) + " " + unit() : "not logged yet";
+    goalText = fmtW(Number(t.goal)) + " " + unit() + (reps > 1 ? " × " + reps : "");
+  }
+  const start = Number(t.start) || 0;
+  let pct = 0;
+  if (cur) {
+    if (goalVal === start) pct = 1;
+    else pct = (cur - start) / (goalVal - start);
+  }
+  pct = Math.max(0, Math.min(1, pct));
+  let left = null, status = "";
+  if (pct >= 1) status = "Reached";
+  else if (t.date) {
+    left = daysBetween(today, t.date);
+    const total = Math.max(1, daysBetween(t.created || today, t.date));
+    const expected = Math.max(0, Math.min(1, daysBetween(t.created || today, today) / total));
+    status = left < 0 ? "Deadline passed" : (pct >= expected - 0.1 ? "On track" : "Behind");
+  }
+  return { cur: cur, pct: pct, left: left, status: status, curText: curText, goalText: goalText };
+}
+
+function targetTitle(t) { return t.type === "weight" ? "Bodyweight" : t.exercise; }
+
+let tForm = { type: "weight", exercise: "", goal: "", reps: "1", date: "" };
 
 function renderGoals() {
   let html = "";
@@ -280,27 +438,240 @@ function renderGoals() {
     html += `<div class="goal-group">
                <div class="card-label">${g.label}</div>
                <div class="chips">`;
-
     g.options.forEach(function (opt) {
       const isOn = goals[key] === opt;
-      html += `<button class="chip${isOn ? " on" : ""}" data-key="${key}" data-value="${opt}">
-                 ${opt}${g.suffix || ""}
-               </button>`;
+      html += `<button class="chip${isOn ? " on" : ""}" data-key="${key}" data-value="${opt}">${opt}${g.suffix || ""}</button>`;
     });
-
-    html += `</div></div>`;
+    html += `</div>`;
+    if (key === "goal") html += `<div class="feed-meta goal-blurb">${esc(goalProfile().blurb)}</div>`;
+    html += `</div>`;
   }
+
+  html += `<div class="goal-group"><div class="card-label">Focus muscles (up to 3)</div><div class="chips">`;
+  MUSCLES.forEach(function (m) {
+    html += `<button class="chip${goals.focus.includes(m[0]) ? " on" : ""}" data-multi="focus" data-value="${m[0]}">${m[1]}</button>`;
+  });
+  html += `</div><div class="feed-meta goal-blurb">${goals.focus.length ? "These get an extra set and an extra exercise when the session allows." : "None picked: your plan is balanced."}</div></div>`;
+
+  html += `<div class="goal-group"><div class="card-label">Avoid (injuries or niggles)</div><div class="chips">`;
+  Object.keys(AVOID_AREAS).forEach(function (a) {
+    html += `<button class="chip${goals.avoid.includes(a) ? " on" : ""}" data-multi="avoid" data-value="${a}">${a}</button>`;
+  });
+  html += `</div><div class="feed-meta goal-blurb">${goals.avoid.length ? "Exercises that load these are left out of your plans." : "Nothing avoided."}</div></div>`;
+
+  html += `<div class="goal-group"><div class="card-label">Rest timer</div><div class="chips">
+    <button class="chip${goals.autoRest ? " on" : ""}" data-key="autoRest" data-value="1">Set by goal</button>
+    <button class="chip${!goals.autoRest ? " on" : ""}" data-key="autoRest" data-value="0">Always my setting</button></div></div>`;
+
+  const t = weeklyTargets();
+  html += `<details class="goal-weekly"><summary>Your weekly set targets</summary>` +
+    MUSCLES.map(function (m) { return `<div class="obj-line"><span>${m[1]}</span><span>${t[m[0]][0]}-${t[m[0]][1]} sets</span></div>`; }).join("") +
+    `</details>`;
 
   $("goals-card").innerHTML = html;
 }
 
 $("goals-card").addEventListener("click", function (e) {
+  const multi = e.target.closest("[data-multi]");
+  if (multi) {
+    const k = multi.dataset.multi, v = multi.dataset.value;
+    const i = goals[k].indexOf(v);
+    if (i >= 0) goals[k].splice(i, 1);
+    else if (k === "focus" && goals.focus.length >= 3) return;
+    else goals[k].push(v);
+    save("goals", goals);
+    renderGoals();
+    refreshPlanAfterGoalChange();
+    return;
+  }
   const btn = e.target.closest("[data-key]");
   if (!btn) return;
-  goals[btn.dataset.key] = btn.dataset.value;
+  if (btn.dataset.key === "autoRest") goals.autoRest = btn.dataset.value === "1";
+  else goals[btn.dataset.key] = btn.dataset.value;
   save("goals", goals);
   renderGoals();
+  refreshPlanAfterGoalChange();
 });
+
+// If today's workout hasn't been started, rebuild it so it matches the new goals
+function refreshPlanAfterGoalChange() {
+  if (typeof workout === "undefined" || !workout) return;
+  const started = workout.exercises.some(function (ex) { return ex.sets.some(function (s) { return s.done; }); });
+  if (!started && !workout.fromRoutine && workout.exercises.length) {
+    const plan = buildPlan();
+    if (plan) { workout = newWorkout(plan); saveWorkout(); renderWorkout(); }
+  }
+  if (typeof refreshHome === "function") refreshHome();
+}
+
+// ----- Targets card (Gym tab) -----
+function liftChoices() {
+  return library.filter(function (l) { return l.need.length > 0 && !l.timed; })
+    .map(function (l) { return l.name; }).sort();
+}
+
+function renderTargets() {
+  const el = $("targets-card");
+  if (!el) return;
+  let html = "";
+
+  goals.targets.forEach(function (t, i) {
+    const p = targetProgress(t);
+    html += `<div class="target-row">
+      <div class="target-top"><b>${esc(targetTitle(t))}</b> <span class="feed-meta">${p.goalText}${t.date ? " by " + esc(t.date) : ""}</span>
+        <button class="link-btn tdel" data-t="del" data-i="${i}" aria-label="Remove target">✕</button></div>
+      <div class="obj-bar"><i style="width:${Math.round(p.pct * 100)}%"></i></div>
+      <div class="feed-meta">Now: ${p.curText} · ${Math.round(p.pct * 100)}%${p.status ? " · " + p.status : ""}</div>
+    </div>`;
+  });
+  if (!goals.targets.length) html += `<p class="feed-meta">No targets yet. Add one below, like a bodyweight or a lift you want to reach.</p>`;
+
+  if (goals.targets.length < 4) {
+    html += `<div class="goal-group" style="margin-top:.8rem"><div class="card-label">Add a target</div><div class="chips">
+      <button class="chip${tForm.type === "weight" ? " on" : ""}" data-t="type" data-v="weight">Bodyweight</button>
+      <button class="chip${tForm.type === "lift" ? " on" : ""}" data-t="type" data-v="lift">A lift</button></div></div>`;
+    if (tForm.type === "lift") {
+      html += `<div class="goal-group"><select class="set-input t-in" id="t-ex" style="text-align:left;padding-left:.8rem"><option value="">Pick an exercise</option>` +
+        liftChoices().map(function (n) { return `<option${tForm.exercise === n ? " selected" : ""}>${esc(n)}</option>`; }).join("") + `</select></div>`;
+    }
+    html += `<div class="goal-group t-grid">
+        <div><div class="card-label">${tForm.type === "weight" ? "Goal weight" : "Goal weight"} (${unit()})</div>
+          <input class="set-input t-in" id="t-goal" inputmode="decimal" value="${esc(tForm.goal)}" style="text-align:left;padding-left:.8rem"></div>
+        ${tForm.type === "lift" ? `<div><div class="card-label">Reps</div><input class="set-input t-in" id="t-reps" inputmode="numeric" value="${esc(tForm.reps)}" style="text-align:left;padding-left:.8rem"></div>` : ""}
+        <div><div class="card-label">By (optional)</div><input class="set-input t-in" id="t-date" type="date" value="${esc(tForm.date)}" style="text-align:left;padding-left:.8rem"></div>
+      </div>
+      <div class="feed-meta" id="t-msg"></div>
+      <button class="btn ghost" data-t="add">Add target</button>`;
+  }
+  el.innerHTML = html;
+}
+
+$("targets-card").addEventListener("input", function (e) {
+  const t = e.target;
+  if (t.id === "t-goal") tForm.goal = t.value;
+  if (t.id === "t-reps") tForm.reps = t.value;
+  if (t.id === "t-date") tForm.date = t.value;
+});
+$("targets-card").addEventListener("change", function (e) {
+  if (e.target.id === "t-ex") tForm.exercise = e.target.value;
+  if (e.target.id === "t-date") tForm.date = e.target.value;
+});
+$("targets-card").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-t]");
+  if (!b) return;
+  const a = b.dataset.t;
+  if (a === "type") { tForm.type = b.dataset.v; renderTargets(); return; }
+  if (a === "del") {
+    goals.targets.splice(Number(b.dataset.i), 1);
+    save("goals", goals); renderTargets(); refreshHome(); return;
+  }
+  if (a === "add") {
+    const msg = $("t-msg");
+    const n = parseFloat(String(tForm.goal).replace(",", "."));
+    if (!isFinite(n) || n <= 0) { msg.textContent = "Enter a goal weight."; return; }
+    const today = dateKey(new Date());
+    const t = { id: Date.now(), type: tForm.type, goal: Math.round(fromDisp(n) * 100) / 100, date: tForm.date || "", created: today };
+    if (t.date && t.date <= today) { msg.textContent = "Pick a date in the future, or leave it empty."; return; }
+    if (tForm.type === "lift") {
+      if (!tForm.exercise) { msg.textContent = "Pick an exercise."; return; }
+      t.exercise = tForm.exercise;
+      t.reps = Math.max(1, Math.min(15, parseInt(tForm.reps) || 1));
+      t.start = Math.round(bestE1rm(t.exercise) * 100) / 100;
+    } else {
+      t.start = latestBodyWeight();
+      if (!t.start) { msg.textContent = "Log your body weight first (Progress tab), so I know where you start."; return; }
+    }
+    goals.targets.push(t);
+    save("goals", goals);
+    tForm = { type: tForm.type, exercise: "", goal: "", reps: "1", date: "" };
+    renderTargets(); refreshHome();
+  }
+});
+
+// ----- Programme card (Gym tab) -----
+let progWeeks = 8;
+
+function renderProgramme() {
+  const el = $("programme-card");
+  if (!el) return;
+  const info = programmeInfo();
+  let html = "";
+
+  if (info && !info.done) {
+    const cells = [];
+    for (let w = 1; w <= info.weeks; w++) {
+      const ph = w === info.weeks ? "Deload" : (w <= Math.ceil((info.weeks - 1) / 2) ? "Build" : "Push");
+      cells.push(`<i class="ph-${ph.toLowerCase()}${w === info.week ? " now" : ""}${w < info.week ? " past" : ""}"></i>`);
+    }
+    html += `<div class="card-label">Week ${info.week} of ${info.weeks}</div>
+      <div class="big">${info.name} phase</div>
+      <div class="ph-bar">${cells.join("")}</div>
+      <div class="feed-meta">${info.tip}</div>
+      <div class="btn-row"><button class="btn ghost" data-p="stop">Stop programme</button></div>`;
+  } else {
+    html += info && info.done ? `<div class="big">Programme complete 🎉</div><div class="feed-meta">Nice work. Start another when you're ready.</div>` :
+      `<div class="feed-meta">A programme plans your weeks for you: a Build phase, a harder Push phase, then an easy Deload week. Exercises stay the same within it so you can add weight.</div>`;
+    html += `<div class="goal-group" style="margin-top:.8rem"><div class="card-label">Length</div><div class="chips">` +
+      [4, 6, 8, 12].map(function (n) { return `<button class="chip${progWeeks === n ? " on" : ""}" data-p="weeks" data-v="${n}">${n} weeks</button>`; }).join("") +
+      `</div></div><button class="btn" data-p="start">Start programme</button>`;
+  }
+  el.innerHTML = html;
+}
+
+$("programme-card").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-p]");
+  if (!b) return;
+  const a = b.dataset.p;
+  if (a === "weeks") { progWeeks = Number(b.dataset.v); renderProgramme(); return; }
+  if (a === "start") goals.programme = { start: weekBounds(0).start, weeks: progWeeks };
+  if (a === "stop") { if (!confirm("Stop the programme?")) return; goals.programme = null; }
+  save("goals", goals);
+  renderProgramme(); refreshPlanAfterGoalChange();
+});
+
+// ----- Today's objectives (Home) -----
+function renderObjectives() {
+  const el = $("objectives");
+  if (!el) return;
+  const info = programmeInfo();
+  const b = weekBounds(0);
+  const goalDays = Math.max(1, Math.min(7, Number(goals.days) || 3));
+  const doneDays = new Set(getWorkoutDates().filter(function (d) { return d >= b.start && d <= b.end; })).size;
+  const mc = muscleCounts(0).counts;
+  const tg = weeklyTargets();
+  const bar = function (pct) { return `<div class="obj-bar"><i style="width:${Math.round(Math.max(0, Math.min(1, pct)) * 100)}%"></i></div>`; };
+
+  let html = `<div class="card-label">This week</div>`;
+  if (info && !info.done) html += `<div class="obj-prog"><b>Week ${info.week} of ${info.weeks} · ${info.name}</b><span class="feed-meta">${info.tip}</span></div>`;
+
+  html += `<div class="obj-line"><span>Workouts</span><span>${doneDays} / ${goalDays}</span></div>${bar(doneDays / goalDays)}`;
+  if (goalProfile().cardio) {
+    const cTarget = goals.goal === "General fitness" ? 60 : 90;
+    const cDone = cardioMinutes(0);
+    html += `<div class="obj-line"><span>Cardio minutes</span><span>${cDone} / ${cTarget}</span></div>${bar(cDone / cTarget)}`;
+  }
+
+  const order = MUSCLES.map(function (m) { return m[0]; }).sort(function (a, c) {
+    return (goals.focus.includes(c) ? 1 : 0) - (goals.focus.includes(a) ? 1 : 0);
+  });
+  const shown = goals.focus.length ? goals.focus : [];
+  shown.forEach(function (k) {
+    const m = MUSCLES.find(function (x2) { return x2[0] === k; });
+    html += `<div class="obj-line"><span>${m ? m[1] : k} sets</span><span>${mc[k] || 0} / ${tg[k][0]}-${tg[k][1]}</span></div>${bar((mc[k] || 0) / tg[k][0])}`;
+  });
+  html += `<details class="goal-weekly"><summary>All muscles</summary>` + order.map(function (k) {
+    const m = MUSCLES.find(function (x2) { return x2[0] === k; });
+    return `<div class="obj-line"><span>${m[1]}</span><span>${mc[k] || 0} / ${tg[k][0]}-${tg[k][1]}</span></div>${bar((mc[k] || 0) / tg[k][0])}`;
+  }).join("") + `</details>`;
+
+  goals.targets.forEach(function (t) {
+    const p = targetProgress(t);
+    html += `<div class="obj-line obj-target"><span>🎯 ${esc(targetTitle(t))}: ${p.goalText}</span><span>${Math.round(p.pct * 100)}%</span></div>${bar(p.pct)}
+      <div class="feed-meta">Now: ${p.curText}${p.left !== null && p.left >= 0 ? " · " + p.left + (p.left === 1 ? " day" : " days") + " left" : ""}${p.status ? " · " + p.status : ""}</div>`;
+  });
+
+  el.innerHTML = html;
+}
 
 
 // =====================================================================
@@ -453,7 +824,8 @@ function renderHero() {
     ex.sets.forEach(function (s) { if (!s.warmup) sets++; });
   });
   const mins = Math.max(5, Math.round(sets * 3.5 / 5) * 5);   // about 3.5 minutes a set, rest included
-  $("hero-label").textContent = goals.goal || "";
+  const _ph = programmeInfo();
+  $("hero-label").textContent = (goals.goal || "") + (_ph && !_ph.done ? " · Week " + _ph.week + " of " + _ph.weeks : "");
   $("next-meta").textContent = exercises
     ? exercises + (exercises === 1 ? " exercise" : " exercises") + " • " + sets + (sets === 1 ? " set" : " sets") + " • ~" + mins + " mins"
     : "Add some exercises to get started";
@@ -474,6 +846,8 @@ $("alt-tiles").addEventListener("click", function (e) {
     return;
   }
 
+  if (a === "timer") { openInterval(); return; }
+
   if (a === "manual") {
     const started = workout.exercises.some(function (ex) { return ex.sets.some(function (s) { return s.done; }); });
     if (started && !confirm("Replace your current workout? Ticked sets will be lost.")) return;
@@ -487,6 +861,7 @@ $("alt-tiles").addEventListener("click", function (e) {
 
 function refreshHome() {
   renderWeekbar();
+  renderObjectives();
   renderWeek();
   renderStreak();
   renderHeatmap();
@@ -500,7 +875,9 @@ function refreshHome() {
 let restEnd = 0;
 let restTimer = null;
 
-function startRest(seconds) {
+function startRest(seconds, label) {
+  const lab = document.querySelector("#rest .rest-label");
+  if (lab) lab.textContent = label || "Rest";
   restEnd = Date.now() + seconds * 1000;
   $("rest").classList.add("show");
   if (!restTimer) restTimer = setInterval(tickRest, 250);
@@ -819,8 +1196,36 @@ const library = [
   x("Bird Dog",                      "core", "iso",      []),
   x("Reverse Crunch",                "core", "iso",      []),
   x("Lying Leg Raise",               "core", "iso",      []),
-  x("Sit-ups",                       "core", "iso",      [])
+  x("Sit-ups",                       "core", "iso",      []),
+
+  // Cardio (logged by minutes and distance, not weight and reps)
+  x("Treadmill Run",                 "cardio", "cardio", ["Treadmill"], true),
+  x("Treadmill Intervals",           "cardio", "cardio", ["Treadmill"], true),
+  x("Incline Walk",                  "cardio", "cardio", ["Treadmill"], true),
+  x("Stationary Bike",               "cardio", "cardio", ["Exercise bike"], true),
+  x("Rowing Machine",                "cardio", "cardio", ["Rowing machine"], true),
+  x("Elliptical",                    "cardio", "cardio", ["Elliptical"], true),
+  x("Jump Rope",                     "cardio", "cardio", ["Skipping rope"], true),
+  x("Outdoor Run",                   "cardio", "cardio", [], true),
+  x("Brisk Walk",                    "cardio", "cardio", [], true),
+  x("Burpees",                       "cardio", "cardio", [], true),
+  x("High Knees",                    "cardio", "cardio", [], true),
+  x("Foam Rolling",                  "cardio", "cardio", ["Foam roller"], true)
 ];
+
+// Cardio is logged by time and distance
+function isCardio(name) {
+  const l = library.find(function (q) { return q.name === name; });
+  return !!l && l.muscle === "cardio";
+}
+function distUnit() { return settings.units === "lb" ? "mi" : "km"; }
+function distToDisp(km) { return settings.units === "lb" ? km * 0.621371 : km; }
+function distFromDisp(v) { return settings.units === "lb" ? v / 0.621371 : v; }
+function fmtDist(km) { return round1(distToDisp(parseFloat(km) || 0)) + " " + distUnit(); }
+function cardioText(s) {
+  const m = parseFloat(s.mins) || 0, d = parseFloat(s.dist) || 0;
+  return (m ? fmt(m) + " min" : "") + (m && d ? ", " : "") + (d ? fmtDist(d) : "") || "done";
+}
 
 // =====================================================================
 // YOUR OWN EXERCISES
@@ -848,6 +1253,7 @@ function allEquipmentNames() {
 }
 
 function muscleLabel(key) {
+  if (key === "cardio") return "Cardio";
   const m = MUSCLES.find(function (m) { return m[0] === key; });
   return m ? m[1] : key;
 }
@@ -972,16 +1378,20 @@ const plans = {
 };
 plans["Lower Body"] = plans["Leg Day"];
 
-// Which sessions make up your week, based on days per week
+// Which sessions make up your week, based on days per week, goal and experience
 function getSplit() {
   const d = goals.days;
+  const fullBodyGoal = (goals.goal === "Lose fat" || goals.goal === "Conditioning" || goals.goal === "General fitness");
   if (d === "2") return ["Full Body A", "Full Body B"];
   if (d === "3") {
-    return goals.experience === "Beginner"
+    return (goals.experience === "Beginner" || fullBodyGoal)
       ? ["Full Body A", "Full Body B", "Full Body C"]
       : ["Push Day", "Pull Day", "Leg Day"];
   }
-  if (d === "4") return ["Upper Body", "Lower Body", "Upper Body", "Lower Body"];
+  if (d === "4") {
+    return fullBodyGoal ? ["Full Body A", "Full Body B", "Full Body C", "Full Body A"]
+                        : ["Upper Body", "Lower Body", "Upper Body", "Lower Body"];
+  }
   if (d === "5") return ["Push Day", "Pull Day", "Leg Day", "Upper Body", "Lower Body"];
   return ["Push Day", "Pull Day", "Leg Day", "Push Day", "Pull Day", "Leg Day"];
 }
@@ -997,11 +1407,30 @@ function hasEquipment(ex) {
   });
 }
 
-// Choose one exercise for a slot
-function pickExercise(muscle, kind, used) {
-  // 1. Everything for this muscle that you can do and haven't used yet
+// No progress for three sessions in a row on this exercise?
+function sessionBests(name, n) {
+  const out = [];
+  const h = getHistory();
+  for (let i = h.length - 1; i >= 0 && out.length < n; i--) {
+    const ex = h[i].exercises.find(function (e) { return e.name === name; });
+    if (!ex) continue;
+    let best = 0;
+    ex.sets.forEach(function (s) { best = Math.max(best, e1rm(parseFloat(s.weight) || 0, parseInt(s.reps) || 0)); });
+    if (best > 0) out.unshift(best);
+  }
+  return out;
+}
+function isStalled(name) {
+  const b = sessionBests(name, 3);
+  return b.length === 3 && b[2] <= b[1] * 1.005 && b[1] <= b[0] * 1.005;
+}
+
+// Choose one exercise for a slot.
+// `prefer` is a list of names to stick with (so you can progress on them) if they still fit.
+function pickExercise(muscle, kind, used, prefer) {
+  // 1. Everything for this muscle that you can do, haven't used yet, and aren't avoiding
   let pool = library.filter(function (ex) {
-    return ex.muscle === muscle && !used.includes(ex.name) && hasEquipment(ex);
+    return ex.muscle === muscle && !used.includes(ex.name) && hasEquipment(ex) && !isAvoided(ex);
   });
 
   // 2. Narrow to the wanted type (if none exist, keep the wider pool)
@@ -1012,69 +1441,183 @@ function pickExercise(muscle, kind, used) {
   const equipped = pool.filter(function (ex) { return ex.need.length > 0; });
   if (equipped.length) pool = equipped;
 
+  // 4. Move away from exercises you've stopped progressing on
+  const moving = pool.filter(function (ex) { return !isStalled(ex.name); });
+  if (moving.length) pool = moving;
+
+  // 5. Stick with last time's exercise if it still fits
+  if (prefer && prefer.length) {
+    const same = pool.filter(function (ex) { return prefer.includes(ex.name); });
+    if (same.length) pool = same;
+  }
+
   if (!pool.length) return null;
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-// Work out sets and reps from your goal and experience
-function prescription(ex) {
+// How many days since each muscle was last trained (99 = not for ages)
+function daysSinceMuscles() {
+  const today = dateKey(new Date());
+  const out = {};
+  MUSCLES.forEach(function (m) { out[m[0]] = 99; });
+  getHistory().forEach(function (w) {
+    const d = daysBetween(w.date, today);
+    w.exercises.forEach(function (ex) {
+      const lib = library.find(function (l) { return l.name === ex.name; });
+      if (lib && lib.muscle in out && d >= 0 && d < out[lib.muscle]) out[lib.muscle] = d;
+    });
+  });
+  return out;
+}
+
+// Work out sets and reps from your goal, experience, programme phase and how you feel.
+// opts: { focus, reduce, lead }
+function prescription(ex, opts) {
+  opts = opts || {};
+  if (ex.type === "cardio") return { sets: 1, reps: "20 min" };
+  const p = goalProfile();
   const compound = ex.type === "compound";
   const level = { "Beginner": 0, "Intermediate": 1, "Advanced": 2 }[goals.experience] || 0;
-  let sets, reps;
-
-  if (goals.goal === "Get stronger") {
-    sets = compound ? [3, 4, 5][level] : [2, 3, 3][level];
-    reps = compound ? "3-6" : "8-10";
-  } else if (goals.goal === "Build muscle") {
-    sets = compound ? [3, 4, 4][level] : [2, 3, 3][level];
-    reps = compound ? "6-10" : "10-15";
-  } else {   // Lose fat or General fitness
-    sets = compound ? [3, 3, 4][level] : [2, 3, 3][level];
-    reps = compound ? "10-12" : "12-15";
-  }
+  let sets = (compound ? p.cSets : p.iSets)[level];
+  let reps = compound ? p.cReps : p.iReps;
 
   // Bodyweight moves can't be loaded, so use steadier rep ranges
   if (ex.need.length === 0) reps = "10-15";
   if (ex.timed) reps = "30-45 sec";
 
-  if (isDeload()) sets = Math.max(2, sets - 1);   // easier week: one fewer set
+  const phase = programmeInfo();
+  if (phase && !phase.done && phase.name === "Push" && compound) sets += 1;
+  if (opts.focus) sets += 1;
+  const ready = readinessToday();
+  if (opts.lead && ready === "fresh") sets += 1;
+  if (opts.reduce) sets -= 1;
+  if (ready === "tired") sets -= 1;
+  if (isDeload()) sets -= 1;   // easier week: one fewer set
 
-  return { sets: sets, reps: reps };
+  return { sets: Math.max(2, Math.min(6, sets)), reps: reps };
+}
+
+// How long to rest between sets for this exercise, set by your goal
+function coachRest(name) {
+  if (!goals.autoRest) return 0;
+  const lib = library.find(function (l) { return l.name === name; });
+  if (!lib) return 0;
+  const p = goalProfile();
+  return lib.type === "compound" ? p.restC : p.restI;
+}
+
+function planTrainsMuscle(planName, muscle) {
+  return plans[planName].some(function (s) { return s[0] === muscle; });
 }
 
 // Builds the plan for your NEXT session (without changing the screen).
+// opts.shuffle: pick fresh exercises instead of sticking with last time's.
 // Returns null if nothing could be built.
-function buildPlan() {
+function buildPlan(opts) {
+  opts = opts || {};
   const split = getSplit();
   const finished = getHistory().filter(function (w) { return !w.routine; }).length;   // your own routines don't advance the split
   const sessionIndex = finished % split.length;
   const planName = split[sessionIndex];
+  const why = [];
 
-  const count = { "30": 4, "45": 5, "60": 6, "90": 8 }[goals.minutes] || 6;
-  const used = [];
-  const exercises = [];
+  const ready = readinessToday();
+  let count = { "30": 4, "45": 5, "60": 6, "90": 8 }[goals.minutes] || 6;
+  if (ready === "tired") count = Math.max(3, count - 1);
 
-  plans[planName].forEach(function (slot) {
-    if (exercises.length >= count) return;
-    const ex = pickExercise(slot[0], slot[1], used);
-    if (!ex) return;
-    used.push(ex.name);
-    const rx = prescription(ex);
-    exercises.push({ name: ex.name, sets: rx.sets, reps: rx.reps });
+  const info = programmeInfo();
+  if (info && !info.done) why.push("Week " + info.week + " of " + info.weeks + ", " + info.name + " phase");
+  if (ready === "tired") why.push("You feel tired, so one exercise and one set less");
+  if (ready === "fresh") why.push("You feel fresh, so an extra set on the first lift");
+
+  // The slots for this session
+  let slotList = plans[planName].slice(0, count).map(function (s) { return { m: s[0], k: s[1] }; });
+
+  // Focus muscles: an extra exercise (at most two extra in a session)
+  let extra = 0;
+  const focusAdded = [];
+  goals.focus.forEach(function (f) {
+    if (extra >= 2) return;
+    const has = slotList.filter(function (s) { return s.m === f; }).length;
+    if (has >= 2) return;
+    const trains = planTrainsMuscle(planName, f);
+    if (!trains && Number(goals.minutes) < 45) return;
+    const slot = { m: f, k: has ? "iso" : "any" };
+    if (trains) slotList.splice(Math.min(3, slotList.length), 0, slot);
+    else slotList.push(slot);
+    extra++;
+    focusAdded.push(f);
   });
 
-  // A little cardio finisher for fat loss / general fitness on longer sessions
-  const wantsCardio = (goals.goal === "Lose fat" || goals.goal === "General fitness");
+  const since = daysSinceMuscles();
+  const weekDone = muscleCounts(0).counts;
+  const tg = weeklyTargets();
+
+  // Same session last time? Stick with those exercises so you can add weight
+  const lastSame = getHistory().filter(function (w) { return w.name === planName && !w.routine; }).pop();
+  const lastNames = lastSame ? lastSame.exercises.map(function (e) { return e.name; }) : [];
+
+  const used = [];
+  const exercises = [];
+  const eased = [];
+  let leadDone = false;
+
+  slotList.forEach(function (slot) {
+    const stick = !opts.shuffle && (slot.k === "compound" || info);
+    const ex = pickExercise(slot.m, slot.k, used, stick ? lastNames : null);
+    if (!ex) return;
+    used.push(ex.name);
+    const reduce = since[slot.m] < 2 || weekDone[slot.m] >= tg[slot.m][1];
+    if (reduce && eased.indexOf(slot.m) < 0) eased.push(slot.m);
+    const lead = !leadDone && ex.type === "compound";
+    if (lead) leadDone = true;
+    const rx = prescription(ex, { focus: goals.focus.includes(slot.m), reduce: reduce, lead: lead });
+    exercises.push({ name: ex.name, sets: rx.sets, reps: rx.reps });
+    if (isStalled(ex.name)) why.push(ex.name + ": no progress for 3 sessions, so drop 10% and build back up");
+  });
+
+  // Keep the session inside your time: about 3.5 minutes a set, rest included
+  const budget = Math.round(Number(goals.minutes) / 3.5) + 1;
+  const total = function () { return exercises.reduce(function (n, e) { return n + e.sets; }, 0); };
+  const isFocusEx = function (e) { const l = library.find(function (q) { return q.name === e.name; }); return l && goals.focus.includes(l.muscle); };
+  let trimmed = false;
+  while (total() > budget) {
+    let i = exercises.length - 1;
+    while (i >= 0 && (exercises[i].sets <= 2 || isFocusEx(exercises[i]))) i--;
+    if (i >= 0) { exercises[i].sets--; trimmed = true; continue; }
+    i = exercises.length - 1;
+    while (i >= 0 && isFocusEx(exercises[i])) i--;
+    if (i >= 0 && exercises.length > 3) { exercises.splice(i, 1); trimmed = true; continue; }
+    break;
+  }
+  if (trimmed) why.push("Trimmed to fit your " + goals.minutes + " minutes");
+
+  const mName = function (k) { const m = MUSCLES.find(function (x2) { return x2[0] === k; }); return m ? m[1].toLowerCase() : k; };
+  if (focusAdded.length) why.push("Extra work for " + focusAdded.map(mName).join(" and ") + " (your focus)");
+  else if (goals.focus.length) why.push("Extra sets on " + goals.focus.map(mName).join(" and ") + " (your focus)");
+  if (eased.length) why.push("One set less for " + eased.map(mName).join(", ") + " (trained recently or weekly target reached)");
+  if (goals.avoid.length) why.push("Leaving out exercises that load your " + goals.avoid.join(", ").toLowerCase());
+
+  // A little cardio finisher for goals that want it, on longer sessions
+  const wantsCardio = goalProfile().cardio && ready !== "tired";
   if (wantsCardio && Number(goals.minutes) >= 45) {
     if (selected.includes("Skipping rope")) {
-      exercises.push({ name: "Jump Rope", sets: 3, reps: "60 sec" });
+      exercises.push({ name: "Jump Rope", sets: 3, reps: "1 min" });
     } else if (selected.includes("Treadmill")) {
       exercises.push({ name: "Treadmill Intervals", sets: 4, reps: "2 min" });
+    } else if (selected.includes("Rowing machine")) {
+      exercises.push({ name: "Rowing Machine", sets: 1, reps: "10 min" });
+    } else if (selected.includes("Exercise bike")) {
+      exercises.push({ name: "Stationary Bike", sets: 1, reps: "10 min" });
+    } else if (selected.includes("Elliptical")) {
+      exercises.push({ name: "Elliptical", sets: 1, reps: "10 min" });
     }
   }
 
   if (!exercises.length) return null;
-  return { name: planName, exercises: exercises, sessionIndex: sessionIndex, splitLength: split.length };
+  const groupNote = addGroupsToPlan(exercises);
+  if (groupNote) why.push(groupNote);
+  return { name: planName, exercises: exercises, sessionIndex: sessionIndex, splitLength: split.length, why: why };
 }
 
 // The "Generate" button
@@ -1087,7 +1630,7 @@ function generateWorkout() {
   });
   if (started && !confirm("Replace your current workout? Ticked sets will be lost.")) return;
 
-  const plan = buildPlan();
+  const plan = buildPlan({ shuffle: true });
   if (!plan) {
     statusEl.textContent = "Couldn’t build a workout. Try ticking more equipment on the Gym tab.";
     return;
@@ -1099,8 +1642,30 @@ function generateWorkout() {
 
   statusEl.textContent = plan.name + " (session " + (plan.sessionIndex + 1) + " of " + plan.splitLength +
     " in your split). Tap Generate again for different exercises." +
+    (plan.why.length ? " Why: " + plan.why.join(". ") + "." : "") +
     (selected.length === 0 ? " No equipment ticked, so this is bodyweight only." : "");
 }
+
+// "How do you feel today?" chips on the Workout tab
+function renderReadiness() {
+  const el = $("ready-row");
+  if (!el) return;
+  const r = readinessToday();
+  el.innerHTML = `<div class="card-label">How do you feel today?</div><div class="chips">` +
+    [["fresh", "Fresh"], ["normal", "Normal"], ["tired", "Tired"]].map(function (o) {
+      return `<button class="chip${r === o[0] ? " on" : ""}" data-r="${o[0]}">${o[1]}</button>`;
+    }).join("") + `</div>`;
+}
+
+$("ready-row").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-r]");
+  if (!b) return;
+  goals.readiness = { date: dateKey(new Date()), level: b.dataset.r };
+  save("goals", goals);
+  renderReadiness();
+  refreshPlanAfterGoalChange();
+  $("gen-status").textContent = "Got it. Your workout is adjusted for how you feel today.";
+});
 
 $("generate-btn").addEventListener("click", generateWorkout);
 
@@ -1348,6 +1913,12 @@ function suggestion(name, target) {
     why = "You hit the top of the rep range, so add a little";
   }
 
+  // No progress for three sessions: take a step back, then build up again
+  if (isStalled(name) && !isDeload()) {
+    kg = topWeight * 0.9;
+    why = "No progress for 3 sessions, so take 10% off and build back up";
+  }
+
   // Easier week: about 10% lighter than last time
   if (isDeload()) {
     kg = topWeight * 0.9;
@@ -1366,6 +1937,10 @@ function suggestion(name, target) {
 
 // The little grey text under each exercise name
 function hintFor(ex, stat) {
+  if (isCardio(ex.name)) {
+    const lc = lastPerformance(ex.name);
+    return lc ? "Last time: " + lc.sets.map(cardioText).join("; ") : "Log the time, and the distance if you track it.";
+  }
   const last = lastPerformance(ex.name);
   if (!last) return "First time logging this one. Start with a weight you can control.";
 
@@ -1432,6 +2007,13 @@ const template = {
 
 // One exercise card's data, with weights pre-filled from your history
 function makeExercise(name, setCount, target) {
+  if (isCardio(name)) {
+    const m = /(\d+(?:\.\d+)?)\s*(sec|min)/.exec(String(target));
+    const mins = m ? (m[2] === "sec" ? Math.round(Number(m[1]) / 6) / 10 : Number(m[1])) : "";
+    const cs = [];
+    for (let i = 0; i < setCount; i++) cs.push({ mins: mins, dist: "", done: false });
+    return { name: name, target: target, rating: null, note: "", sets: cs };
+  }
   const sug = suggestion(name, target);
   const sets = [];
   for (let i = 0; i < setCount; i++) {
@@ -1450,7 +2032,9 @@ function newWorkout(plan) {
     startedAt: null,
     fromRoutine: false,
     exercises: plan.exercises.map(function (ex) {
-      return makeExercise(ex.name, ex.sets, ex.reps);
+      const e = makeExercise(ex.name, ex.sets, ex.reps);
+      if (ex.group != null) e.group = ex.group;
+      return e;
     })
   };
 }
@@ -1478,11 +2062,16 @@ function renderWorkout() {
     const lib = library.find(function (l) { return l.name === ex.name; });
     const canWarm = lib ? (lib.need.length > 0 && !lib.timed) : true;
     const hasWarm = ex.sets.some(function (s) { return s.warmup; });
+    const cardio = isCardio(ex.name);
 
-    html += `<div class="card">
+    const gl = groupLabels()[ei];
+    html += `<div class="card${gl ? " grouped" : ""}">
+      ${gl ? `<div class="grp-tag">${gl.kind} ${gl.tag}</div>` : ""}
       <div class="ex-head">
         <div class="ex-name">${esc(ex.name)}</div>
         <div class="tools">
+          <button class="tool" data-action="form" data-ex="${ei}">Form</button>
+          ${(ex.group != null || workout.exercises[ei + 1]) ? `<button class="tool" data-action="superset" data-ex="${ei}">${ex.group != null ? "Unlink" : "Superset ↓"}</button>` : ""}
           ${gearKind(ex.name) === "barbell" ? `<button class="tool" data-action="plates" data-ex="${ei}">Plates</button>` : ""}
           ${canWarm ? `<button class="tool" data-action="warmup" data-ex="${ei}">${hasWarm ? "Clear warm-up" : "Warm-up"}</button>` : ""}
           <button class="tool" data-action="history" data-ex="${ei}">History</button>
@@ -1492,12 +2081,25 @@ function renderWorkout() {
         <button class="more" data-action="menu" data-ex="${ei}" aria-label="More options for ${esc(ex.name)}">•••</button>
       </div>
       <div class="hint">${hintFor(ex, allStats[ex.name])}</div>
-      <div class="set-row w5 set-head"><div>SET</div><div>${unit().toUpperCase()}</div><div>REPS</div><div>RPE</div><div></div></div>`;
+      <div class="set-row w5 set-head"><div>SET</div><div>${cardio ? "MIN" : unit().toUpperCase()}</div><div>${cardio ? distUnit().toUpperCase() : "REPS"}</div><div>RPE</div><div></div></div>`;
 
     let n = 0;
     ex.sets.forEach(function (s, si) {
       if (!s.warmup) { totalCount++; if (s.done) doneCount++; }
       const label = s.warmup ? "W" : String(++n);
+      if (cardio) {
+        const dShown = (s.dist === "" || s.dist == null) ? "" : String(round1(distToDisp(parseFloat(s.dist) || 0)));
+        html += `<div class="set-row w5${s.done ? " done" : ""}">
+          <div class="set-num">${label}</div>
+          <input class="set-input" inputmode="decimal" placeholder="${esc(String(ex.target))}"
+                 value="${esc(s.mins)}" data-ex="${ei}" data-set="${si}" data-field="mins">
+          <input class="set-input" inputmode="decimal" placeholder="0"
+                 value="${esc(dShown)}" data-ex="${ei}" data-set="${si}" data-field="dist">
+          <select class="rpe" data-ex="${ei}" data-set="${si}" data-field="rpe">${rpeOptions(s.rpe)}</select>
+          <button class="check" data-action="toggle" data-ex="${ei}" data-set="${si}">✓</button>
+        </div>`;
+        return;
+      }
       const shownWeight = (s.weight === "" || s.weight == null) ? "" : fmtW(s.weight);
       html += `<div class="set-row w5${s.done ? " done" : ""}${s.warmup ? " warm" : ""}">
         <div class="set-num">${label}</div>
@@ -1551,6 +2153,11 @@ function onWorkoutInput(e) {
     if (field === "weight") {
       const n = parseFloat(t.value.replace(",", "."));
       set.weight = isNaN(n) ? "" : Math.round(fromDisp(n) * 1000) / 1000;   // stored in kg
+    } else if (field === "mins") {
+      set.mins = t.value.replace(",", ".");
+    } else if (field === "dist") {
+      const n = parseFloat(t.value.replace(",", "."));
+      set.dist = isNaN(n) ? "" : Math.round(distFromDisp(n) * 1000) / 1000;   // stored in km
     } else if (field === "rpe") {
       set.rpe = t.value;
     } else {
@@ -1588,15 +2195,17 @@ $("workout-list").addEventListener("click", function (e) {
     if (s.done) {
       if (!workout.startedAt) workout.startedAt = Date.now();
       // Ticked without typing reps? Log the bottom of the target range
-      if (String(s.reps).trim() === "") s.reps = String(parseInt(ex.target) || "");
-      startRest(s.warmup ? 45 : restFor(ex.name));
+      if (!isCardio(ex.name) && String(s.reps).trim() === "") s.reps = String(parseInt(ex.target) || "");
+      if (s.warmup) startRest(45);
+      else { const r = restAfterSet(ei); startRest(r.secs, r.label); }
     }
   }
 
   if (action === "addset") {
     const working = ex.sets.filter(function (s) { return !s.warmup; });
     const last = working[working.length - 1];
-    ex.sets.push({ weight: last ? last.weight : "", reps: last ? last.reps : "", done: false });
+    if (isCardio(ex.name)) ex.sets.push({ mins: last ? last.mins : "", dist: "", done: false });
+    else ex.sets.push({ weight: last ? last.weight : "", reps: last ? last.reps : "", done: false });
   }
 
   if (action === "rate") {
@@ -1625,12 +2234,15 @@ $("workout-list").addEventListener("click", function (e) {
   }
 
   if (action === "history") { openExerciseHistory(ex.name); return; }
+  if (action === "form") { openFormSheet(ex.name); return; }
+  if (action === "superset") toggleSuperset(ei);
 
   if (action === "swap") swapExercise(ei);
 
   if (action === "skip") {
     if (!confirm("Remove " + ex.name + " from today’s workout?")) return;
     workout.exercises.splice(ei, 1);
+    cleanGroups();
   }
 
   saveWorkout();
@@ -1650,7 +2262,9 @@ function swapExercise(ei) {
   const replacement = pickExercise(current.muscle, current.type, used);
   if (!replacement) { alert("No other exercise fits your equipment."); return; }
 
-  workout.exercises[ei] = makeExercise(replacement.name, Math.max(1, ex.sets.filter(function (s) { return !s.warmup; }).length), prescription(replacement).reps);
+  const swapped = makeExercise(replacement.name, Math.max(1, ex.sets.filter(function (s) { return !s.warmup; }).length), prescription(replacement).reps);
+  if (ex.group != null) swapped.group = ex.group;
+  workout.exercises[ei] = swapped;
 }
 
 function finishWorkout() {
@@ -1664,7 +2278,10 @@ function finishWorkout() {
         name: ex.name,
         rating: ex.rating,
         note: (ex.note || "").trim(),
-        sets: doneSets.map(function (s) { return { weight: s.weight, reps: s.reps, rpe: s.rpe || "" }; })
+        sets: doneSets.map(function (s) {
+          if (isCardio(ex.name)) return { mins: s.mins, dist: s.dist, rpe: s.rpe || "" };
+          return { weight: s.weight, reps: s.reps, rpe: s.rpe || "" };
+        })
       });
     }
   });
@@ -1681,6 +2298,7 @@ function finishWorkout() {
   const entry = { date: dateKey(new Date()), name: workout.name, minutes: minutes, routine: !!workout.fromRoutine, exercises: exercises };
   save("workoutHistory", prior.concat([entry]));
   addWorkoutDate(entry.date);
+  const newBadges = takeNewBadges();
 
   // Line up your NEXT workout straight away (weights pre-filled from what you just did)
   workout = newWorkout(buildPlan() || template);
@@ -1688,7 +2306,7 @@ function finishWorkout() {
   stopRest();
 
   renderAll();
-  openSummary(entry, prs);
+  openSummary(entry, prs, newBadges);
 }
 
 
@@ -1717,7 +2335,7 @@ function workoutTotals(w) {
   return { volume: volume, sets: sets };
 }
 
-function openSummary(entry, prs) {
+function openSummary(entry, prs, newBadges) {
   const t = workoutTotals(entry);
   let html = `<div class="card-label">Workout complete</div>
     <div class="big">${esc(entry.name)}</div>
@@ -1731,6 +2349,13 @@ function openSummary(entry, prs) {
     html += `<h2>New personal records</h2>`;
     prs.forEach(function (p) {
       html += `<div class="pr-line">🏆 <b>${esc(p.name)}</b>: ${fmtW(p.kg)} ${unit()} × ${p.reps}</div>`;
+    });
+  }
+
+  if (newBadges && newBadges.length) {
+    html += `<h2>New achievements</h2>`;
+    newBadges.forEach(function (b) {
+      html += `<div class="pr-line">${b.icon} <b>${esc(b.name)}</b>: ${esc(b.desc)}</div>`;
     });
   }
 
@@ -1753,9 +2378,20 @@ function renderEditor() {
     <input type="date" class="inp-date" data-f="date" value="${esc(d.date)}">`;
 
   d.exercises.forEach(function (ex, ei) {
+    const cardioEx = isCardio(ex.name);
     html += `<div class="ex-name">${esc(ex.name)}</div>
-      <div class="set-row set-head"><div>SET</div><div>${unit().toUpperCase()}</div><div>REPS</div><div></div></div>`;
+      <div class="set-row set-head"><div>SET</div><div>${cardioEx ? "MIN" : unit().toUpperCase()}</div><div>${cardioEx ? distUnit().toUpperCase() : "REPS"}</div><div></div></div>`;
     ex.sets.forEach(function (s, si) {
+      if (cardioEx) {
+        const dShown = (s.dist === "" || s.dist == null) ? "" : String(round1(distToDisp(parseFloat(s.dist) || 0)));
+        html += `<div class="set-row">
+          <div class="set-num">${si + 1}</div>
+          <input class="set-input" inputmode="decimal" placeholder="0" value="${esc(s.mins)}" data-e="${ei}" data-s="${si}" data-f="mins">
+          <input class="set-input" inputmode="decimal" placeholder="0" value="${esc(dShown)}" data-e="${ei}" data-s="${si}" data-f="dist">
+          <button class="check" data-a="edit-delset" data-e="${ei}" data-s="${si}">✕</button>
+        </div>`;
+        return;
+      }
       const shown = (s.weight === "" || s.weight == null) ? "" : fmtW(s.weight);
       html += `<div class="set-row">
         <div class="set-num">${si + 1}</div>
@@ -1810,6 +2446,7 @@ $("sheet").addEventListener("click", function (e) {
   if (a === "plate-close") closeSheet();
   if (a === "hist-close") closeSheet();
   if (a === "add-close") closeSheet();
+  if (a === "lib-hist") openExerciseHistory(b.dataset.name);
   if (a === "add-ex") {
     const lib = library.find(function (l) { return l.name === b.dataset.name; });
     if (!lib) return;
@@ -1844,6 +2481,11 @@ $("sheet").addEventListener("input", function (e) {
   if (t.dataset.f === "weight") {
     const n = parseFloat(t.value.replace(",", "."));
     set.weight = isNaN(n) ? "" : Math.round(fromDisp(n) * 1000) / 1000;
+  } else if (t.dataset.f === "mins") {
+    set.mins = t.value.replace(",", ".");
+  } else if (t.dataset.f === "dist") {
+    const n = parseFloat(t.value.replace(",", "."));
+    set.dist = isNaN(n) ? "" : Math.round(distFromDisp(n) * 1000) / 1000;
   } else {
     set.reps = t.value;
   }
@@ -1875,6 +2517,9 @@ function renderFeed() {
     const t = workoutTotals(w);
 
     const lines = w.exercises.map(function (ex) {
+      if (isCardio(ex.name)) {
+        return `<div class="feed-line"><span>${esc(ex.name)}</span><span class="feed-meta">${esc(ex.sets.map(cardioText).join("; "))}</span></div>`;
+      }
       let best = null;
       ex.sets.forEach(function (s) {
         const kg = parseFloat(s.weight) || 0;
@@ -1909,6 +2554,7 @@ function renderFeed() {
       </div>
       <details class="feed-detail"><summary>Sets and notes</summary><div class="feed-lines">${lines}</div></details>
       <div class="feed-actions">
+        <button class="tool" data-a="feed-share" data-i="${item.i}">Share</button>
         <button class="tool" data-a="feed-edit" data-i="${item.i}">Edit</button>
         <button class="tool" data-a="feed-del" data-i="${item.i}">Delete</button>
       </div>
@@ -1922,6 +2568,10 @@ $("feed-list").addEventListener("click", function (e) {
   const index = Number(b.dataset.i);
 
   if (b.dataset.a === "feed-edit") openEditor(index);
+  if (b.dataset.a === "feed-share") {
+    const w = getHistory()[index];
+    if (w) shareOut("BTB workout", workoutShareText(w), appUrl());
+  }
 
   if (b.dataset.a === "feed-del") {
     if (!confirm("Delete this workout from your history?")) return;
@@ -1945,6 +2595,7 @@ function exerciseStats() {
 
   getHistory().forEach(function (w) {
     w.exercises.forEach(function (ex) {
+      if (isCardio(ex.name)) return;
       let bestE = 0, bestSet = null, bestReps = 0;
       ex.sets.forEach(function (s) {
         const kg = parseFloat(s.weight) || 0;
@@ -1974,6 +2625,8 @@ function renderProgress() {
   const names = Object.keys(stats).filter(function (n) { return stats[n].sessions.length > 0; });
 
   renderMuscles();
+  renderWeekly();
+  renderAchievements();
   renderBodyChart();
 
   // Lifts that have stopped improving
@@ -2164,7 +2817,12 @@ function plateauInfo(stat) {
 
 let deload = load("deload", { until: null, dismissedOn: null, lastEnded: null });
 function saveDeload() { save("deload", deload); }
-function isDeload() { return !!deload.until && dateKey(new Date()) <= deload.until; }
+function isManualDeload() { return !!deload.until && dateKey(new Date()) <= deload.until; }
+function isDeload() {
+  if (isManualDeload()) return true;
+  const ph = programmeInfo();
+  return !!(ph && !ph.done && ph.name === "Deload");   // the last week of a programme is an easy week
+}
 
 function daysBetween(a, b) {
   return Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
@@ -2221,7 +2879,7 @@ function renderDeload() {
     saveDeload();
   }
 
-  if (isDeload()) {
+  if (isManualDeload()) {
     const until = new Date(deload.until + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
     el.style.display = "";
     el.innerHTML = `<div class="card-label">Easier week</div>
@@ -2692,6 +3350,7 @@ function openExerciseHistory(name) {
       weekday: "short", day: "numeric", month: "short", year: "numeric"
     });
     const sets = s.ex.sets.map(function (set) {
+      if (isCardio(name)) return cardioText(set);
       const kg = parseFloat(set.weight) || 0;
       const reps = parseInt(set.reps) || 0;
       const rpe = set.rpe ? " @" + set.rpe : "";
@@ -3599,11 +4258,1015 @@ $("import-file").addEventListener("change", function (e) {
 
 
 // =====================================================================
+// WEEKLY TREND (Progress tab): the last 8 weeks as bars
+// =====================================================================
+let weeklyMetric = "sets";
+
+function cardioMinutes(offset) {
+  const b = weekBounds(offset);
+  let m = 0;
+  getHistory().forEach(function (w) {
+    if (w.date < b.start || w.date > b.end) return;
+    w.exercises.forEach(function (ex) {
+      if (isCardio(ex.name)) ex.sets.forEach(function (s) { m += parseFloat(s.mins) || 0; });
+    });
+  });
+  return Math.round(m * 10) / 10;
+}
+
+function weeklySeries(metric, n) {
+  const out = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const b = weekBounds(i);
+    let v = 0;
+    if (metric === "cardio") v = cardioMinutes(i);
+    else getHistory().forEach(function (w) {
+      if (w.date < b.start || w.date > b.end) return;
+      if (metric === "workouts") { v += 1; return; }
+      w.exercises.forEach(function (ex) {
+        if (isCardio(ex.name)) return;
+        ex.sets.forEach(function (s) {
+          if (metric === "sets") v += 1;
+          else v += (parseFloat(s.weight) || 0) * (parseInt(s.reps) || 0);
+        });
+      });
+    });
+    if (metric === "volume") v = Math.round(toDisp(v));
+    out.push({ label: new Date(b.start + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" }), v: v });
+  }
+  return out;
+}
+
+function barChartSvg(series) {
+  const W = 320, H = 170, padL = 8, padR = 8, padT = 18, padB = 26;
+  const max = Math.max(1, Math.max.apply(null, series.map(function (p) { return p.v; })));
+  const slot = (W - padL - padR) / series.length;
+  const bw = Math.min(26, slot * 0.62);
+  let svg = `<svg class="chart" viewBox="0 0 ${W} ${H}"><line class="ch-grid" x1="${padL}" y1="${H - padB}" x2="${W - padR}" y2="${H - padB}"/>`;
+  series.forEach(function (p, i) {
+    const h = (H - padT - padB) * (p.v / max);
+    const cx = padL + slot * i + slot / 2;
+    const y = H - padB - h;
+    svg += `<rect class="ch-bar" x="${cx - bw / 2}" y="${y}" width="${bw}" height="${Math.max(h, p.v ? 2 : 0)}" rx="3"/>`;
+    if (p.v) svg += `<text class="ch-txt" x="${cx}" y="${y - 5}" text-anchor="middle">${p.v >= 10000 ? Math.round(p.v / 1000) + "k" : p.v}</text>`;
+    if (i % 2 === series.length % 2 || i === series.length - 1) svg += `<text class="ch-txt" x="${cx}" y="${H - 8}" text-anchor="middle">${p.label}</text>`;
+  });
+  return svg + `</svg>`;
+}
+
+function renderWeekly() {
+  const el = $("weekly-card");
+  if (!el) return;
+  const metrics = [["sets", "Sets"], ["volume", "Volume"], ["workouts", "Workouts"], ["cardio", "Cardio min"]];
+  const series = weeklySeries(weeklyMetric, 8);
+  const any = series.some(function (p) { return p.v > 0; });
+  el.innerHTML = `<div class="chips" style="margin-bottom:.8rem">` + metrics.map(function (m) {
+    return `<button class="chip${weeklyMetric === m[0] ? " on" : ""}" data-wm="${m[0]}">${m[1]}</button>`;
+  }).join("") + `</div>` + (any ? barChartSvg(series) : `<p class="feed-meta">Nothing logged in the last 8 weeks yet.</p>`) +
+    `<div class="feed-meta">Per week, last 8 weeks${weeklyMetric === "volume" ? " (" + unit() + " lifted)" : ""}.</div>`;
+}
+
+$("weekly-card").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-wm]");
+  if (!b) return;
+  weeklyMetric = b.dataset.wm;
+  renderWeekly();
+});
+
+
+// =====================================================================
+// LIBRARY TAB: browse every exercise, see your history, add one to today
+// =====================================================================
+let libQuery = "";
+let libMuscle = "all";
+let libMine = true;
+
+function sessionsOf(name) {
+  const out = [];
+  getHistory().forEach(function (w) {
+    w.exercises.forEach(function (ex) { if (ex.name === name) out.push({ date: w.date, ex: ex }); });
+  });
+  return out;
+}
+
+function renderLibrary() {
+  const chips = [["all", "All"]].concat(MUSCLES.map(function (m) { return [m[0], m[1].split(" ")[0]]; })).concat([["cardio", "Cardio"]]);
+  $("lib-chips").innerHTML = chips.map(function (c) {
+    return `<button class="chip${libMuscle === c[0] ? " on" : ""}" data-lib="muscle" data-v="${c[0]}">${c[1]}</button>`;
+  }).join("") +
+    `<button class="chip${libMine ? " on" : ""}" data-lib="mine">My equipment only</button>`;
+  renderLibraryList();
+}
+
+function renderLibraryList() {
+  const q = libQuery.trim().toLowerCase();
+  const items = library.filter(function (l) {
+    return (libMuscle === "all" || l.muscle === libMuscle) && (!libMine || hasEquipment(l)) &&
+           (!q || l.name.toLowerCase().indexOf(q) >= 0);
+  }).sort(function (a, b) { return a.name.localeCompare(b.name); });
+
+  $("lib-count").textContent = items.length + (items.length === 1 ? " exercise" : " exercises");
+  const shown = items.slice(0, 120);
+  $("lib-list").innerHTML = shown.map(function (l) {
+    const n = sessionsOf(l.name).length;
+    let tag = n ? n + (n === 1 ? " session" : " sessions") : "";
+    if (isAvoided(l)) tag = "Avoided";
+    else if (!hasEquipment(l)) tag = "Needs gear";
+    return `<button class="lib-row" data-lib="open" data-name="${esc(l.name)}">
+      <span><b>${esc(l.name)}</b><span class="feed-meta">${esc(muscleLabel(l.muscle))}${l.type === "compound" ? " · compound" : ""}</span></span>
+      <span class="lib-tag">${esc(tag)}</span></button>`;
+  }).join("") + (items.length > shown.length ? `<p class="feed-meta">Showing the first ${shown.length}. Search or filter to narrow it down.</p>` : "") +
+    (!items.length ? `<p class="feed-meta">Nothing matches. Try “My equipment only” off, or another search.</p>` : "");
+}
+
+$("lib-q").addEventListener("input", function (e) { libQuery = e.target.value; renderLibraryList(); });
+
+$("library").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-lib]");
+  if (!b) return;
+  const a = b.dataset.lib;
+  if (a === "muscle") { libMuscle = b.dataset.v; renderLibrary(); }
+  if (a === "mine") { libMine = !libMine; renderLibrary(); }
+  if (a === "open") openLibraryDetail(b.dataset.name);
+});
+
+function openLibraryDetail(name) {
+  const l = library.find(function (q) { return q.name === name; });
+  if (!l) return;
+  const sessions = sessionsOf(name);
+  const cardio = l.muscle === "cardio";
+
+  const needs = l.need.length ? l.need.map(function (req) {
+    const opts = req.split("|");
+    const have = opts.some(function (o) { return selected.includes(o); });
+    return `<span class="need ${have ? "have" : "miss"}">${have ? "✓" : "✗"} ${esc(opts.join(" or "))}</span>`;
+  }).join("") : `<span class="need have">✓ No equipment</span>`;
+
+  let html = `<div class="card-label">${esc(muscleLabel(l.muscle))}${l.type === "compound" ? " · compound" : l.type === "iso" ? " · isolation" : ""}</div>
+    <div class="big">${esc(name)}</div>
+    <div class="needs">${needs}</div>`;
+  if (isAvoided(l)) html += `<p class="feed-meta" style="margin-top:.6rem">This is on your avoid list, so the planner won’t pick it.</p>`;
+
+  if (!sessions.length) {
+    html += `<p class="feed-meta" style="margin-top:.8rem">You haven’t logged this one yet.</p>`;
+  } else {
+    const pts = sessions.map(function (s) {
+      let v = 0;
+      s.ex.sets.forEach(function (set) {
+        v = cardio ? v + (parseFloat(set.mins) || 0) : Math.max(v, toDisp(e1rm(parseFloat(set.weight) || 0, parseInt(set.reps) || 0)));
+      });
+      return { date: s.date, v: Math.round(v * 10) / 10 };
+    }).filter(function (p) { return p.v > 0; }).slice(-12);
+
+    const last = sessions[sessions.length - 1];
+    html += `<div class="feed-meta" style="margin-top:.6rem">${sessions.length} session${sessions.length === 1 ? "" : "s"} · last ${new Date(last.date + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })}: ` +
+      esc(last.ex.sets.map(function (s) {
+        if (cardio) return cardioText(s);
+        const kg = parseFloat(s.weight) || 0;
+        return kg > 0 ? fmtW(kg) + "×" + (parseInt(s.reps) || 0) : (parseInt(s.reps) || 0) + " reps";
+      }).join(", ")) + `</div>`;
+    if (pts.length > 1) html += `<div class="feed-meta" style="margin-top:.8rem">${cardio ? "Minutes per session" : "Estimated 1RM (" + unit() + ")"}</div>` + lineChartSvg(pts);
+  }
+
+  html += cueHtml(name);
+  html += `<div class="btn-row" style="margin-top:.8rem">
+      <button class="btn ghost" data-a="lib-hist" data-name="${esc(name)}">All sessions</button>
+      <button class="btn" data-a="add-ex" data-name="${esc(name)}">Add to workout</button>
+    </div><button class="btn ghost" data-a="hist-close">Close</button>`;
+  openSheet(html);
+}
+
+
+// =====================================================================
+// SHARING
+// =====================================================================
+function appUrl() { return location.href.split("#")[0].split("?")[0].replace(/index\.html$/, ""); }
+
+function shareOut(title, text, url) {
+  if (navigator.share) { navigator.share({ title: title, text: text, url: url }).catch(function () {}); return; }
+  const full = text + (url ? "\n" + url : "");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(full).then(function () { alert("Copied. Paste it into a message."); },
+      function () { window.prompt("Copy this:", full); });
+  } else {
+    window.prompt("Copy this:", full);
+  }
+}
+
+function workoutShareText(w) {
+  const t = workoutTotals(w);
+  const date = new Date(w.date + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+  const lines = w.exercises.map(function (ex) {
+    if (isCardio(ex.name)) return ex.name + ": " + ex.sets.map(cardioText).join("; ");
+    let best = null;
+    ex.sets.forEach(function (s) {
+      const kg = parseFloat(s.weight) || 0;
+      if (!best || kg > best.kg) best = { kg: kg, reps: parseInt(s.reps) || 0 };
+    });
+    return ex.name + ": " + ex.sets.length + " sets" + (best && best.kg ? ", top " + fmtW(best.kg) + " " + unit() + " × " + best.reps : "");
+  });
+  return "BTB - " + w.name + " (" + date + ")\n" + lines.join("\n") + "\n" +
+    t.sets + " sets" + (t.volume ? ", " + Math.round(toDisp(t.volume)).toLocaleString() + " " + unit() + " lifted" : "") +
+    (w.minutes ? ", " + w.minutes + " min" : "");
+}
+
+$("share-app").addEventListener("click", function () {
+  shareOut("BTB - Beyond The Body", "I'm training with BTB - Beyond The Body, a free home gym tracker that plans workouts around your equipment and goals. Open it on your phone and add it to your home screen:", appUrl());
+});
+
+
+// =====================================================================
+// FIRST-TIME WELCOME
+// =====================================================================
+const OB_PRESETS = [
+  { id: "none",  title: "Just me", sub: "No equipment, bodyweight only", gear: [] },
+  { id: "bands", title: "Resistance bands", sub: "Bands and bodyweight", gear: ["Resistance bands"] },
+  { id: "db",    title: "Dumbbells and a bench", sub: "A simple home setup", gear: ["Dumbbells", "Adjustable bench"] },
+  { id: "basic", title: "Home gym basics", sub: "Barbell, plates, rack, bench, dumbbells, pull-up bar",
+    gear: ["Dumbbells", "Barbell", "Weight plates", "Adjustable bench", "Squat rack", "Pull-up bar"] },
+  { id: "full",  title: "Full home gym", sub: "Basics plus cables, leg press, Smith machine, dip station",
+    gear: ["Dumbbells", "Barbell", "Weight plates", "Adjustable bench", "Squat rack", "Pull-up bar", "EZ curl bar",
+           "Dip station", "Cable machine", "Lat pulldown", "Leg press", "Smith machine"] },
+  { id: "own",   title: "I'll tick my own", sub: "Choose item by item on the Gym tab", gear: null }
+];
+
+let ob = null;
+
+function openWelcome() {
+  ob = { step: 0, goal: goals.goal, experience: goals.experience, days: String(goals.days), minutes: String(goals.minutes),
+         units: settings.units, preset: null };
+  renderWelcome();
+  $("welcome").classList.add("show");
+}
+
+function obChips(key, options, suffix) {
+  return `<div class="chips">` + options.map(function (o) {
+    return `<button class="chip${String(ob[key]) === String(o) ? " on" : ""}" data-ob="set" data-k="${key}" data-v="${esc(String(o))}">${esc(String(o))}${suffix || ""}</button>`;
+  }).join("") + `</div>`;
+}
+
+function renderWelcome() {
+  const el = $("welcome");
+  const last = 5;
+  let body = "";
+  let title = "";
+
+  if (ob.step === 0) {
+    body = `<img class="welcome-logo" src="logo-full.svg" alt="BTB - Beyond The Body">
+      <p class="welcome-lead">A few taps and your first workout is ready, planned around your goal and the gear you actually have.</p>`;
+  } else if (ob.step === 1) {
+    title = "What's your main goal?";
+    body = Object.keys(GOAL_PROFILES).map(function (g) {
+      return `<button class="ob-opt${ob.goal === g ? " on" : ""}" data-ob="set" data-k="goal" data-v="${esc(g)}"><b>${esc(g)}</b><span>${esc(GOAL_PROFILES[g].blurb)}</span></button>`;
+    }).join("");
+  } else if (ob.step === 2) {
+    title = "About your training";
+    body = `<div class="card-label">Experience</div>` + obChips("experience", ["Beginner", "Intermediate", "Advanced"]) +
+      `<p class="feed-meta">Beginner: under a year of regular lifting. Advanced: several years of structured training.</p>
+       <div class="card-label" style="margin-top:1rem">Days per week</div>` + obChips("days", [2, 3, 4, 5, 6]) +
+      `<div class="card-label" style="margin-top:1rem">Session length</div>` + obChips("minutes", [30, 45, 60, 90], " min");
+  } else if (ob.step === 3) {
+    title = "Which units?";
+    body = obChips("units", ["kg", "lb"]) + `<p class="feed-meta">Weights, distances and measurements follow this. You can change it any time on the Gym tab.</p>`;
+  } else if (ob.step === 4) {
+    title = "What equipment do you have?";
+    const list = OB_PRESETS.concat(selected.length ? [{ id: "keep", title: "Keep what I have ticked", sub: selected.length + " items already selected", gear: null }] : []);
+    body = list.map(function (p) {
+      return `<button class="ob-opt${ob.preset === p.id ? " on" : ""}" data-ob="set" data-k="preset" data-v="${p.id}"><b>${esc(p.title)}</b><span>${esc(p.sub)}</span></button>`;
+    }).join("") + `<p class="feed-meta">You can fine-tune this any time on the Gym tab.</p>`;
+  } else {
+    title = "You're set";
+    const p = OB_PRESETS.find(function (q) { return q.id === ob.preset; });
+    body = `<div class="card"><div class="obj-line"><span>Goal</span><span>${esc(ob.goal)}</span></div>
+      <div class="obj-line"><span>Level</span><span>${esc(ob.experience)}</span></div>
+      <div class="obj-line"><span>Training</span><span>${ob.days} days · ${ob.minutes} min</span></div>
+      <div class="obj-line"><span>Units</span><span>${esc(ob.units)}</span></div>
+      <div class="obj-line"><span>Equipment</span><span>${esc(p ? p.title : "Keep current")}</span></div></div>
+      <p class="feed-meta">Next: your first workout. Log your body weight in the Progress tab to track a bodyweight target.</p>`;
+  }
+
+  const canNext = ob.step !== 4 || ob.preset;
+  el.innerHTML = `<div class="welcome-in">
+      <div class="welcome-top"><div class="welcome-dots">${[0, 1, 2, 3, 4, 5].map(function (i) { return `<i class="${i <= ob.step ? "on" : ""}"></i>`; }).join("")}</div>
+        <button class="link-btn" data-ob="skip">Skip</button></div>
+      ${title ? `<h1 class="welcome-h">${title}</h1>` : ""}
+      <div class="welcome-body">${body}</div>
+      <div class="welcome-foot">
+        ${ob.step > 0 ? `<button class="btn ghost" data-ob="back">Back</button>` : ""}
+        <button class="btn" data-ob="next"${canNext ? "" : " disabled"}>${ob.step === 0 ? "Let’s start" : ob.step === last ? "Build my first workout" : "Next"}</button>
+      </div></div>`;
+  el.scrollTop = 0;
+}
+
+function finishWelcome(apply) {
+  if (apply) {
+    goals.goal = ob.goal; goals.experience = ob.experience; goals.days = ob.days; goals.minutes = ob.minutes;
+    normGoals(goals);
+    save("goals", goals);
+
+    if (settings.units !== ob.units) {
+      settings.units = ob.units;
+      save("settings", settings);
+      gear = defaultGear();
+      save("gear", gear);
+    }
+
+    const p = OB_PRESETS.find(function (q) { return q.id === ob.preset; });
+    if (p && p.gear) { selected = p.gear.slice(); save("selectedEquipment", selected); }
+
+    const plan = buildPlan({ shuffle: true });
+    workout = newWorkout(plan || template);
+    saveWorkout();
+  }
+  save("onboarded", true);
+  $("welcome").classList.remove("show");
+  renderAll();
+  showTab(apply && ob.preset === "own" ? "gym" : "home");
+}
+
+$("welcome").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-ob]");
+  if (!b || !ob) return;
+  const a = b.dataset.ob;
+  if (a === "set") { ob[b.dataset.k] = b.dataset.v; renderWelcome(); return; }
+  if (a === "back") { ob.step = Math.max(0, ob.step - 1); renderWelcome(); return; }
+  if (a === "skip") { finishWelcome(false); return; }
+  if (a === "next") {
+    if (ob.step >= 5) { finishWelcome(true); return; }
+    ob.step++;
+    renderWelcome();
+  }
+});
+
+$("setup-again").addEventListener("click", function () {
+  if (confirm("Run the welcome setup again? It updates your goal, days, units and equipment. Your workout history stays.")) openWelcome();
+});
+
+// =====================================================================
+// FORM CUES: how to do it, and the common mistakes
+// Rules are checked in order and the first match wins, so specific moves come first.
+// =====================================================================
+function cue(how, avoid) { return { how: how, avoid: avoid }; }
+
+const CUE_RULES = [
+  [/foam rolling/i, cue(
+    ["Roll slowly, about an inch a second, over one muscle at a time.", "Pause 20-30 seconds on tender spots and breathe out.", "Keep the roller off joints and your lower back."],
+    ["Rolling fast", "Pressing so hard you tense up"])],
+
+  // ----- Hinges -----
+  [/romanian|stiff-leg|good morning/i, cue(
+    ["Soft knees, then push your hips straight back as if closing a door with them.", "Bar or weights stay close to your legs, back flat, chest proud.", "Stop when your hamstrings stretch, then squeeze your glutes to stand."],
+    ["Rounding your lower back", "Squatting it down instead of hinging", "Letting the weight drift away from you"])],
+  [/deadlift|rack pull/i, cue(
+    ["Set your feet hip-width, grip just outside your legs, and pull the slack out of the bar.", "Brace your stomach, keep your back flat, and push the floor away.", "Stand tall with hips and knees locking together, then lower under control."],
+    ["Jerking the bar off the floor", "Rounding your back", "Leaning back at the top"])],
+  [/swing/i, cue(
+    ["Hinge your hips back and hike the bell behind your legs.", "Snap your hips forward hard so the bell floats to chest height.", "Arms stay loose: your hips do the work."],
+    ["Squatting it", "Lifting with your arms", "Leaning back at the top"])],
+  [/hip thrust|glute bridge/i, cue(
+    ["Upper back on the bench (or shoulders on the floor), feet flat, shins about vertical at the top.", "Tuck your chin and ribs down, then drive through your heels.", "Squeeze your glutes hard at the top for a second."],
+    ["Over-arching your lower back at the top", "Pushing through your toes"])],
+  [/pull-through/i, cue(
+    ["Face away from the cable, hinge your hips back with a flat back.", "Drive your hips forward and squeeze your glutes at the top.", "Arms stay straight: it is a hip movement."],
+    ["Squatting it", "Pulling with your arms"])],
+  [/hyperextension|back extension|superman/i, cue(
+    ["Lift by squeezing your glutes and lower back until your body is in one straight line.", "Move slowly and pause for a second at the top.", "Look at the floor to keep your neck neutral."],
+    ["Swinging up with momentum", "Leaning back past straight"])],
+  [/leg curl|hamstring curl/i, cue(
+    ["Keep your hips down and pull your heels toward your glutes.", "Squeeze at the top, then lower for about 3 seconds.", "Move only your lower legs."],
+    ["Lifting your hips to cheat", "Dropping the weight fast"])],
+  [/abduction|adduction|lateral walk|glute kickback/i, cue(
+    ["Stay upright and move from your hips, not your back.", "Use a smooth, controlled push and squeeze at the end.", "Keep your toes pointing forward."],
+    ["Leaning or twisting to swing the weight", "Rushing the return"])],
+
+  // ----- Legs -----
+  [/calf raise/i, cue(
+    ["Rise up as high as you can on the balls of your feet.", "Pause for a second at the top, then lower for a full stretch.", "Keep your knees almost straight, unless it is a seated version."],
+    ["Bouncing at the bottom", "Cutting the stretch short"])],
+  [/leg extension/i, cue(
+    ["Sit with your knees lined up with the machine's pivot.", "Kick up until your legs are nearly straight and squeeze your quads.", "Lower slowly, taking about 3 seconds."],
+    ["Swinging the weight up", "Locking out hard"])],
+  [/leg press/i, cue(
+    ["Feet shoulder-width on the plate, lower back and hips flat on the pad.", "Lower until your knees are about 90 degrees, then press through your whole foot.", "Stop just short of locking your knees."],
+    ["Letting your hips curl off the pad", "Locking your knees hard", "Letting your knees cave in"])],
+  [/hack squat|pendulum|belt squat/i, cue(
+    ["Back and hips stay against the pad, feet about shoulder-width.", "Lower until your thighs are around parallel or a little deeper.", "Drive through your whole foot and keep your knees in line with your toes."],
+    ["Heels lifting", "Knees caving in", "Bouncing at the bottom"])],
+  [/sissy|wall sit/i, cue(
+    ["Keep your core braced and your body in a controlled, straight line.", "Move slowly and stop where it stays pain-free.", "Breathe steadily instead of holding your breath."],
+    ["Dropping into it too fast", "Pushing through knee pain"])],
+  [/box jump|jump squat/i, cue(
+    ["Load your hips back, then swing your arms and jump up explosively.", "Land softly with bent knees, like you are landing on eggs.", "Reset fully between reps."],
+    ["Landing stiff-legged", "Rushing reps when tired"])],
+  [/lunge|split squat|step-up|cossack/i, cue(
+    ["Take a long enough stance that your front knee stays above your ankle.", "Torso tall, lower under control, and drive through your front heel.", "Keep your front knee tracking over your toes."],
+    ["Knee caving in", "Pushing off your back foot", "Too short a step"])],
+  [/squat/i, cue(
+    ["Feet about shoulder-width, toes slightly out, brace your stomach before you go down.", "Sit down between your hips until your thighs reach at least parallel, knees tracking over your toes.", "Drive up through your whole foot, chest up."],
+    ["Knees caving in", "Heels lifting off the floor", "Rounding your lower back at the bottom"])],
+
+  // ----- Pulls -----
+  [/pull-up|chin-up/i, cue(
+    ["Start from a full hang with your shoulders pulled down away from your ears.", "Pull your elbows down and back until your chin clears the bar.", "Lower under control to a full hang."],
+    ["Kicking or swinging", "Half reps", "Shrugging up to your ears"])],
+  [/straight-arm|pullover/i, cue(
+    ["Keep your arms nearly straight with a soft elbow bend.", "Sweep the weight in an arc, feeling the stretch in your lats.", "Brace your core so your ribs do not flare."],
+    ["Bending your elbows into a press", "Arching your back"])],
+  [/pulldown/i, cue(
+    ["Sit tall, brace, and pull the bar to your upper chest.", "Lead with your elbows, driving them down and back.", "Let the bar rise slowly until your arms are straight."],
+    ["Leaning far back and rowing it", "Pulling the bar behind your neck", "Using momentum"])],
+  [/shrug/i, cue(
+    ["Hold the weight at your sides and lift your shoulders straight up toward your ears.", "Squeeze at the top for a second, then lower fully.", "Keep your arms straight and your head still."],
+    ["Rolling your shoulders", "Bending your elbows"])],
+  [/face pull|rear delt|reverse fly|reverse pec|y raise|pull-apart/i, cue(
+    ["Keep your arms mostly straight (or elbows high for face pulls) and spread your hands apart.", "Squeeze your shoulder blades together at the end.", "Use a light weight and slow, clean reps."],
+    ["Using too much weight and swinging", "Shrugging your shoulders"])],
+  [/upright row/i, cue(
+    ["Pull the weight up close to your body to about chest height.", "Lead with your elbows, keeping them no higher than your shoulders.", "Lower slowly."],
+    ["Pulling elbows far above your shoulders", "Swinging with your hips"])],
+  [/row/i, cue(
+    ["Brace your core and keep your back flat or your chest supported.", "Pull your elbows back toward your hips and squeeze your shoulder blades together.", "Lower slowly until your arms are straight."],
+    ["Jerking with your hips", "Shrugging your shoulders up", "Rounding your back"])],
+
+  // ----- Shoulders and arms -----
+  [/overhead press|shoulder press|push press|arnold|kettlebell press|landmine press|pike push/i, cue(
+    ["Brace your stomach and squeeze your glutes so you do not lean back.", "Press straight up, moving your head slightly out of the way, until your arms are locked.", "Lower under control to about chin or shoulder height."],
+    ["Leaning back and turning it into an incline press", "Flaring your ribs", "Pressing the weight forward"])],
+  [/lateral raise/i, cue(
+    ["Slight elbow bend, lift your arms out to the sides to about shoulder height.", "Lead with your elbows, as if pouring a jug of water.", "Lower slowly."],
+    ["Swinging your body", "Raising your shoulders to your ears", "Lifting above shoulder height"])],
+  [/front raise/i, cue(
+    ["Stand tall and lift the weight in front of you to about eye level, arms nearly straight.", "Keep your body still and your shoulders down.", "Lower slowly."],
+    ["Swinging the weight up", "Leaning back"])],
+  [/halo/i, cue(
+    ["Hold the bell close to your chest and circle it around your head.", "Keep your ribs down and hips still.", "Alternate directions each set."],
+    ["Arching your back", "Letting the bell drift away from you"])],
+  [/curl/i, cue(
+    ["Keep your elbows pinned near your sides.", "Curl up until your biceps are fully squeezed, then lower for about 3 seconds.", "Keep your wrists straight."],
+    ["Swinging your body", "Letting your elbows drift forward", "Dropping the weight fast"])],
+  [/triceps kickback/i, cue(
+    ["Hinge forward and pin your upper arm to your side.", "Straighten your elbow fully and squeeze your triceps.", "Only your forearm moves."],
+    ["Swinging your arm", "Dropping your elbow"])],
+  [/skull|jm press/i, cue(
+    ["Keep your upper arms still and bend only at the elbows.", "Lower the weight toward your forehead or just behind your head, then extend.", "Keep your elbows from flaring wide."],
+    ["Flaring your elbows", "Letting your upper arms drift", "Using too much weight"])],
+  [/pushdown/i, cue(
+    ["Elbows tight to your sides, chest up.", "Push down until your arms are fully straight and squeeze.", "Let your hands rise slowly to about chest height."],
+    ["Leaning over the weight", "Letting your elbows swing out"])],
+  [/triceps extension/i, cue(
+    ["Keep your upper arms close to your head and still.", "Lower behind your head with control, then extend until your arms are straight.", "Brace your core so your back does not arch."],
+    ["Flaring your elbows", "Arching your lower back"])],
+  [/leg raise|knee raise|toes-to-bar/i, cue(
+    ["Hang or brace your body and keep your torso still.", "Curl your pelvis up and raise your legs or knees under control.", "Lower slowly without swinging."],
+    ["Swinging for momentum", "Only moving your thighs without curling your hips"])],
+  [/dips?\b/i, cue(
+    ["Support yourself with your shoulders down and chest slightly forward.", "Lower until your upper arms are about parallel to the floor.", "Press back up until your elbows are straight."],
+    ["Going so deep that your shoulders hurt", "Shrugging up to your ears", "Flaring your elbows wide"])],
+
+  // ----- Chest -----
+  [/push-up/i, cue(
+    ["Hands slightly wider than your shoulders, body in one straight line from head to heels.", "Lower your chest to just above the floor with your elbows at about 45 degrees.", "Press the floor away until your arms are straight."],
+    ["Sagging hips", "Flaring your elbows wide", "Cutting the range short"])],
+  [/fly|pec deck/i, cue(
+    ["Keep a slight bend in your elbows and hold it constant.", "Open until you feel a stretch across your chest, then squeeze your hands together.", "Use a lighter weight than you would for a press."],
+    ["Turning it into a press by bending your elbows", "Stretching so far that your shoulders hurt"])],
+  [/bench press|floor press|chest press|incline|decline|dumbbell press|squeeze press|svend|close-grip/i, cue(
+    ["Shoulder blades pinched back and down, feet planted, a small arch in your upper back.", "Lower the weight to your mid-chest with your elbows about 45-60 degrees from your body.", "Press up and slightly back until your arms are straight."],
+    ["Bouncing the bar off your chest", "Flaring your elbows wide", "Lifting your hips off the bench"])],
+
+  // ----- Core -----
+  [/plank|hollow/i, cue(
+    ["Make a straight line from your head to your heels (or a banana shape for a hollow hold).", "Squeeze your glutes and brace your stomach.", "Breathe steadily."],
+    ["Sagging hips", "Piking your hips up", "Holding your breath"])],
+  [/crunch|sit-up/i, cue(
+    ["Curl your ribs toward your hips instead of pulling on your neck.", "Pause and squeeze at the top.", "Lower under control."],
+    ["Yanking on your head", "Using momentum"])],
+  [/rollout|fallout|body saw|suspension pike/i, cue(
+    ["Brace your stomach and tuck your pelvis so your lower back stays flat.", "Move out only as far as you can keep your back from sagging.", "Pull back using your abs."],
+    ["Letting your lower back sag", "Going too far too soon"])],
+  [/twist|woodchop|pallof|rotation|windmill|rotary|torso/i, cue(
+    ["Keep your hips steady and rotate through your ribs and upper back.", "Move with control, with your core braced the whole time.", "Pause briefly at each end."],
+    ["Swinging with momentum", "Twisting from your lower back or arms"])],
+  [/dead bug|bird dog/i, cue(
+    ["Keep your lower back steady and your core braced.", "Move opposite arm and leg slowly and smoothly.", "Breathe out as you extend."],
+    ["Letting your back arch or rotate", "Rushing"])],
+  [/carry/i, cue(
+    ["Stand tall with your shoulders down and back, gripping hard.", "Take short, steady steps and brace your core.", "Keep your body still: no leaning or swaying."],
+    ["Leaning to one side", "Shrugging up"])],
+  [/slam/i, cue(
+    ["Reach the ball overhead, then slam it down hard using your whole body.", "Hinge at your hips as you go down.", "Catch or pick it up with a flat back."],
+    ["Using only your arms", "Rounding your back picking it up"])],
+  [/mountain climber/i, cue(
+    ["Hands under your shoulders, body in a straight line.", "Drive your knees toward your chest in a steady rhythm.", "Keep your hips level."],
+    ["Bouncing your hips up", "Letting your shoulders drift back"])]
+];
+
+const CUE_CARDIO = [
+  [/foam rolling/i, cue(
+    ["Roll slowly, about an inch a second, over one muscle at a time.", "Pause 20-30 seconds on tender spots and breathe out.", "Keep the roller off joints and your lower back."],
+    ["Rolling fast", "Pressing so hard you tense up"])],
+  [/rowing machine/i, cue(
+    ["Push with your legs first, then lean back slightly, then pull the handle to your lower chest.", "Reverse the order on the way back: arms, body, then knees.", "Keep a steady rhythm of one power stroke to two easy seconds."],
+    ["Pulling with your arms first", "Hunching your back"])],
+  [/treadmill|run|walk/i, cue(
+    ["Warm up with 3-5 easy minutes first.", "Stand tall, keep your steps light, and let your arms swing naturally.", "Pick a pace you could talk at, unless you are doing intervals."],
+    ["Starting too fast", "Gripping the rails", "Over-striding"])],
+  [/bike|elliptical/i, cue(
+    ["Set the seat so your knee has a slight bend at the bottom.", "Keep your upper body relaxed and your breathing steady.", "Add resistance instead of just spinning faster if it feels too easy."],
+    ["Setting the seat too low", "Gripping the handles hard"])],
+  [/jump rope/i, cue(
+    ["Keep your elbows near your sides and turn the rope with your wrists.", "Hop low, just high enough for the rope to pass, landing softly on the balls of your feet.", "Look ahead and keep a steady rhythm."],
+    ["Jumping too high", "Swinging the rope with your whole arms"])],
+  [/burpee/i, cue(
+    ["Drop to a plank, lower your chest, then press up and jump your feet in.", "Finish with a jump and clap overhead.", "Pace yourself so form holds as you tire."],
+    ["Sagging hips in the plank", "Rushing until your form breaks"])],
+  [/high knees/i, cue(
+    ["Run on the spot, driving your knees up to about hip height.", "Stay tall and pump your arms.", "Land softly on the balls of your feet."],
+    ["Leaning back", "Landing heavy on your heels"])]
+];
+
+// Fallback for anything that does not match, such as a custom exercise
+const CUE_GENERIC = {
+  compound: cue(["Set your position and brace your core before you move.", "Control the weight down, then drive up smoothly.", "Keep your joints stacked and your back flat or neutral."],
+                ["Rushing the lowering", "Using so much weight that your form breaks"]),
+  iso: cue(["Move only the muscle you are training and keep the rest of your body still.", "Lift under control and squeeze at the top.", "Lower slowly, taking about 3 seconds."],
+           ["Swinging the weight", "Rushing the reps"]),
+  cardio: cue(["Warm up gently for a few minutes.", "Keep a steady pace you can hold.", "Breathe steadily and keep your posture tall."],
+              ["Starting too hard"])
+};
+
+// Returns { how: [...], avoid: [...], generic: true/false }
+function cueFor(name) {
+  const lib = library.find(function (l) { return l.name === name; });
+  const rules = (lib && lib.muscle === "cardio") ? CUE_CARDIO : CUE_RULES;
+  for (let i = 0; i < rules.length; i++) {
+    if (rules[i][0].test(name)) return { how: rules[i][1].how, avoid: rules[i][1].avoid, generic: false };
+  }
+  const g = CUE_GENERIC[lib ? (lib.muscle === "cardio" ? "cardio" : lib.type) : "iso"] || CUE_GENERIC.iso;
+  return { how: g.how, avoid: g.avoid, generic: true };
+}
+
+function cueHtml(name) {
+  const c = cueFor(name);
+  return `<div class="cue">
+    <div class="card-label">How to do it</div>
+    <ol class="cue-list">${c.how.map(function (s) { return `<li>${esc(s)}</li>`; }).join("")}</ol>
+    <div class="card-label">Common mistakes</div>
+    <ul class="cue-list avoid">${c.avoid.map(function (s) { return `<li>${esc(s)}</li>`; }).join("")}</ul>
+    <div class="feed-meta">General guidance. If something hurts, stop and check with a coach or doctor.</div></div>`;
+}
+
+function openFormSheet(name) {
+  openSheet(`<div class="card-label">Form guide</div><div class="big">${esc(name)}</div>${cueHtml(name)}
+    <button class="btn" data-a="hist-close">Close</button>`);
+}
+
+// =====================================================================
+// SUPERSETS AND CIRCUITS
+// Exercises that share a "group" number are done back to back: one set of each, then a rest.
+// =====================================================================
+function workingDone(ex) { return ex.sets.filter(function (s) { return s.done && !s.warmup; }).length; }
+
+function groupIndexes(g) {
+  const out = [];
+  if (g == null) return out;
+  workout.exercises.forEach(function (e, i) { if (e.group === g) out.push(i); });
+  return out;
+}
+
+// After you tick a set: how long to rest, and what comes next?
+function restAfterSet(ei) {
+  const ex = workout.exercises[ei];
+  const full = restFor(ex.name);
+  const members = groupIndexes(ex.group);
+  if (members.length < 2) return { secs: full, label: "Rest" };
+  const k = workingDone(ex);
+  const total = ex.sets.filter(function (s) { return !s.warmup; }).length;
+  // The next member (looking forward, then wrapping round) that is behind this one
+  const order = members.filter(function (i) { return i > ei; }).concat(members.filter(function (i) { return i < ei; }));
+  for (let n = 0; n < order.length; n++) {
+    const m = workout.exercises[order[n]];
+    const mTotal = m.sets.filter(function (s) { return !s.warmup; }).length;
+    if (workingDone(m) < k && workingDone(m) < mTotal) return { secs: 10, label: "Next: " + m.name };
+  }
+  const longest = Math.max.apply(null, members.map(function (i) { return restFor(workout.exercises[i].name); }));
+  return { secs: Math.max(full, longest), label: k >= total ? "Rest" : "Rest, then round " + (k + 1) };
+}
+
+// Link this exercise with the next one, or take it out of its group
+function toggleSuperset(ei) {
+  const ex = workout.exercises[ei];
+  if (ex.group != null) {
+    delete ex.group;
+    cleanGroups();
+    return;
+  }
+  const next = workout.exercises[ei + 1];
+  if (!next) return;
+  if (next.group != null) ex.group = next.group;
+  else {
+    let id = 1;
+    workout.exercises.forEach(function (e) { if (e.group != null && e.group >= id) id = e.group + 1; });
+    ex.group = id;
+    next.group = id;
+  }
+}
+
+// A group with only one member is not a group
+function cleanGroups() {
+  const counts = {};
+  workout.exercises.forEach(function (e) { if (e.group != null) counts[e.group] = (counts[e.group] || 0) + 1; });
+  workout.exercises.forEach(function (e) { if (e.group != null && counts[e.group] < 2) delete e.group; });
+}
+
+// "A1", "A2", "B1" ... plus whether it is a superset (2) or a circuit (3+)
+function groupLabels() {
+  const letters = {};
+  const sizes = {};
+  const seen = {};
+  let next = 0;
+  workout.exercises.forEach(function (e) {
+    if (e.group == null) return;
+    if (!(e.group in letters)) letters[e.group] = String.fromCharCode(65 + next++);
+    sizes[e.group] = (sizes[e.group] || 0) + 1;
+  });
+  const out = {};
+  workout.exercises.forEach(function (e, i) {
+    if (e.group == null) return;
+    seen[e.group] = (seen[e.group] || 0) + 1;
+    out[i] = { tag: letters[e.group] + seen[e.group], kind: sizes[e.group] > 2 ? "Circuit" : "Superset" };
+  });
+  return out;
+}
+
+// The planner pairs smaller exercises when you are short on time, and builds a circuit for Conditioning
+function addGroupsToPlan(exercises) {
+  const small = [];
+  exercises.forEach(function (e, i) {
+    const l = library.find(function (q) { return q.name === e.name; });
+    // Never the first (lead) lift: that one deserves full rest
+    if (l && l.muscle !== "cardio" && i > 0) small.push(i);
+  });
+  if (goals.goal === "Conditioning") {
+    const pool = exercises.map(function (e, i) { return i; }).filter(function (i) {
+      const l = library.find(function (q) { return q.name === exercises[i].name; });
+      return l && l.muscle !== "cardio";
+    }).slice(-3);
+    if (pool.length >= 3) { pool.forEach(function (i) { exercises[i].group = 1; }); return "Last three exercises set up as a circuit"; }
+  }
+  if (Number(goals.minutes) <= 30 && small.length >= 2) {
+    const a = small[small.length - 2], b = small[small.length - 1];
+    // Bring the second one up next to the first, then link them
+    const moved = exercises.splice(b, 1)[0];
+    exercises.splice(a + 1, 0, moved);
+    exercises[a].group = 1;
+    exercises[a + 1].group = 1;
+    return "Last two exercises paired as a superset to save time";
+  }
+  return null;
+}
+
+
+// =====================================================================
+// INTERVAL TIMER (Tabata, EMOM, or your own work and rest)
+// =====================================================================
+const IV_PRESETS = {
+  tabata: { work: 20, rest: 10, rounds: 8 },
+  emom:   { work: 60, rest: 0,  rounds: 10 },
+  custom: { work: 40, rest: 20, rounds: 6 }
+};
+let ivCfg = load("intervalCfg", { mode: "tabata", work: 20, rest: 10, rounds: 8 });
+if (!IV_PRESETS[ivCfg.mode]) ivCfg = { mode: "tabata", work: 20, rest: 10, rounds: 8 };
+let ivRun = null;      // set while the timer is running
+let ivWake = null;
+let ivAudio = null;
+
+// A list of phases: get ready, then work / rest for each round
+function intervalPlan(cfg) {
+  const work = Math.max(1, Number(cfg.work) || 1);
+  const rest = Math.max(0, Number(cfg.rest) || 0);
+  const rounds = Math.max(1, Math.min(99, Number(cfg.rounds) || 1));
+  const phases = [{ type: "ready", secs: 5, round: 0 }];
+  for (let r = 1; r <= rounds; r++) {
+    phases.push({ type: "work", secs: work, round: r });
+    if (rest > 0 && r < rounds) phases.push({ type: "rest", secs: rest, round: r });
+  }
+  return phases;
+}
+
+function intervalTotal(cfg) {
+  return intervalPlan(cfg).filter(function (p) { return p.type !== "ready"; })
+    .reduce(function (n, p) { return n + p.secs; }, 0);
+}
+
+function ivBeep(freq, ms) {
+  try {
+    if (!ivAudio) ivAudio = new (window.AudioContext || window.webkitAudioContext)();
+    if (ivAudio.state === "suspended") ivAudio.resume();
+    const o = ivAudio.createOscillator();
+    const g = ivAudio.createGain();
+    o.frequency.value = freq;
+    g.gain.value = 0.25;
+    o.connect(g); g.connect(ivAudio.destination);
+    o.start();
+    o.stop(ivAudio.currentTime + ms / 1000);
+  } catch (err) { /* sound is optional */ }
+}
+function ivBuzz(pattern) { try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (err) {} }
+
+function ivSetup() {
+  const mode = ivCfg.mode;
+  const total = intervalTotal(ivCfg);
+  const row = function (key, label, step, min, max, fmt) {
+    return `<div class="iv-row"><div>${label}</div>
+      <div class="iv-step"><button data-iv="dec" data-k="${key}" data-step="${step}" data-min="${min}" aria-label="Less ${label}">−</button>
+      <b>${fmt(ivCfg[key])}</b>
+      <button data-iv="inc" data-k="${key}" data-step="${step}" data-max="${max}" aria-label="More ${label}">+</button></div></div>`;
+  };
+  const secs = function (v) { return v >= 60 && v % 60 === 0 ? (v / 60) + " min" : v + " s"; };
+  let rows = "";
+  if (mode === "custom") {
+    rows = row("work", "Work", 5, 5, 600, secs) + row("rest", "Rest", 5, 0, 300, secs) + row("rounds", "Rounds", 1, 1, 50, String);
+  } else if (mode === "emom") {
+    rows = row("rounds", "Minutes", 1, 1, 60, String);
+  } else {
+    rows = `<p class="feed-meta">8 rounds of 20 seconds all-out, 10 seconds rest.</p>`;
+  }
+  const blurb = mode === "emom" ? "Every Minute On the Minute: start a task as each minute begins and rest for what is left of it."
+    : mode === "tabata" ? "The classic 4-minute burst." : "Set your own work and rest.";
+  return `<div class="card-label">Interval timer</div><div class="big">Ready when you are</div>
+    <div class="chips" style="margin:.8rem 0">
+      ${["tabata", "emom", "custom"].map(function (m) {
+        return `<button class="chip${mode === m ? " on" : ""}" data-iv="mode" data-v="${m}">${m === "emom" ? "EMOM" : m[0].toUpperCase() + m.slice(1)}</button>`;
+      }).join("")}
+    </div>
+    <p class="feed-meta">${blurb}</p>${rows}
+    <div class="feed-meta" style="margin:.8rem 0">Total ${mmss(total)} (plus a 5 second countdown). Sound and a buzz mark each change.</div>
+    <button class="btn" data-iv="start">Start</button>
+    <button class="btn ghost" data-iv="close">Close</button>`;
+}
+
+function ivRender() {
+  const el = $("iv-sheet");
+  if (!ivRun) { el.innerHTML = ivSetup(); return; }
+  el.innerHTML = `<div class="iv-run" id="iv-phase">
+      <div class="iv-label" id="iv-label"></div>
+      <div class="iv-time" id="iv-time"></div>
+      <div class="iv-round" id="iv-round"></div>
+      <div class="iv-bar"><div class="iv-fill" id="iv-fill"></div></div>
+      <div class="btn-row">
+        <button class="btn ghost" data-iv="pause" id="iv-pause">Pause</button>
+        <button class="btn" data-iv="stop">Stop</button>
+      </div></div>`;
+  ivTick(true);
+}
+
+function ivStart() {
+  save("intervalCfg", ivCfg);
+  const plan = intervalPlan(ivCfg);
+  ivRun = { plan: plan, idx: 0, end: Date.now() + plan[0].secs * 1000, paused: false, left: 0, lastBeep: -1, totalSecs: plan.reduce(function (n, p) { return n + p.secs; }, 0), elapsedBefore: 0 };
+  ivBeep(660, 120);
+  try { if (navigator.wakeLock) navigator.wakeLock.request("screen").then(function (l) { ivWake = l; }).catch(function () {}); } catch (err) {}
+  if (!ivRun.timer) ivRun.timer = setInterval(function () { ivTick(false); }, 200);
+  ivRender();
+}
+
+function ivStop() {
+  if (ivRun) clearInterval(ivRun.timer);
+  ivRun = null;
+  try { if (ivWake) { ivWake.release(); ivWake = null; } } catch (err) {}
+  ivRender();
+}
+
+function ivTick(force) {
+  if (!ivRun) return;
+  const r = ivRun;
+  if (!r.paused) {
+    let left = Math.ceil((r.end - Date.now()) / 1000);
+    while (left <= 0) {
+      r.idx++;
+      if (r.idx >= r.plan.length) {
+        ivBeep(880, 500); ivBuzz([400, 150, 400]);
+        clearInterval(r.timer);
+        ivRun = null;
+        try { if (ivWake) { ivWake.release(); ivWake = null; } } catch (err) {}
+        $("iv-sheet").innerHTML = `<div class="card-label">Interval timer</div><div class="big">Done!</div>
+          <p class="feed-meta" style="margin:.6rem 0 1rem">${intervalTotal(ivCfg) ? mmss(intervalTotal(ivCfg)) + " of work finished. Nice." : ""}</p>
+          <button class="btn" data-iv="again">Go again</button>
+          <button class="btn ghost" data-iv="close">Close</button>`;
+        return;
+      }
+      r.end += r.plan[r.idx].secs * 1000;
+      r.lastBeep = -1;
+      const ph = r.plan[r.idx];
+      ivBeep(ph.type === "work" ? 880 : 520, 350);
+      ivBuzz(ph.type === "work" ? [300] : [120, 80, 120]);
+      left = Math.ceil((r.end - Date.now()) / 1000);
+    }
+    r.left = left;
+    // Three short beeps before each change
+    if (left <= 3 && left >= 1 && r.lastBeep !== left) { r.lastBeep = left; ivBeep(600, 90); }
+  }
+  const ph = r.plan[r.idx];
+  const lab = $("iv-label");
+  if (!lab) return;
+  const names = { ready: "Get ready", work: "Work", rest: "Rest" };
+  lab.textContent = r.paused ? "Paused" : names[ph.type];
+  $("iv-phase").className = "iv-run iv-" + ph.type;
+  $("iv-time").textContent = mmss(r.left || ph.secs);
+  const rounds = r.plan.filter(function (p) { return p.type === "work"; }).length;
+  $("iv-round").textContent = ph.type === "ready" ? "Starting soon" : "Round " + ph.round + " of " + rounds;
+  const doneSecs = r.plan.slice(0, r.idx).reduce(function (n, p) { return n + p.secs; }, 0) + (ph.secs - (r.left || ph.secs));
+  $("iv-fill").style.width = Math.min(100, Math.round(doneSecs / r.totalSecs * 100)) + "%";
+  $("iv-pause").textContent = r.paused ? "Resume" : "Pause";
+}
+
+function ivPauseToggle() {
+  const r = ivRun;
+  if (!r) return;
+  if (r.paused) { r.end = Date.now() + r.left * 1000; r.paused = false; }
+  else { r.left = Math.ceil((r.end - Date.now()) / 1000); r.paused = true; }
+  ivTick(true);
+}
+
+function openInterval() {
+  $("interval").classList.add("show");
+  ivRender();
+}
+function closeInterval() {
+  if (ivRun) clearInterval(ivRun.timer);
+  ivRun = null;
+  try { if (ivWake) { ivWake.release(); ivWake = null; } } catch (err) {}
+  $("interval").classList.remove("show");
+}
+
+$("open-timer").addEventListener("click", openInterval);
+
+$("interval").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-iv]");
+  if (!b) return;
+  const a = b.dataset.iv;
+  if (a === "close") { closeInterval(); return; }
+  if (a === "mode") {
+    const m = b.dataset.v;
+    ivCfg = m === "custom" && ivCfg.mode !== "custom" ? Object.assign({ mode: "custom" }, load("intervalCustom", IV_PRESETS.custom)) : Object.assign({ mode: m }, IV_PRESETS[m]);
+    ivRender(); return;
+  }
+  if (a === "inc" || a === "dec") {
+    const k = b.dataset.k, step = Number(b.dataset.step);
+    const v = Number(ivCfg[k]) + (a === "inc" ? step : -step);
+    const lo = a === "dec" ? Number(b.dataset.min) : -Infinity;
+    const hi = a === "inc" ? Number(b.dataset.max) : Infinity;
+    ivCfg[k] = Math.max(lo, Math.min(hi, v));
+    if (ivCfg.mode === "custom") save("intervalCustom", { work: ivCfg.work, rest: ivCfg.rest, rounds: ivCfg.rounds });
+    ivRender(); return;
+  }
+  if (a === "start" || a === "again") { ivStart(); return; }
+  if (a === "pause") { ivPauseToggle(); return; }
+  if (a === "stop") { ivStop(); return; }
+});
+
+
+// =====================================================================
+// ACHIEVEMENTS
+// Worked out from your history every time, so they can never get out of step.
+// =====================================================================
+function weekStartKey(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return dateKey(d);
+}
+
+// Longest run of weeks where you trained on at least your goal number of days
+function bestWeekStreak(history) {
+  const goalDays = Math.max(1, Math.min(7, Number(goals.days) || 3));
+  const perWeek = {};
+  history.forEach(function (w) {
+    const k = weekStartKey(w.date);
+    (perWeek[k] = perWeek[k] || {})[w.date] = true;
+  });
+  const weeks = Object.keys(perWeek).filter(function (k) { return Object.keys(perWeek[k]).length >= goalDays; }).sort();
+  let best = 0, run = 0, prev = null;
+  weeks.forEach(function (k) {
+    const t = new Date(k + "T00:00:00").getTime();
+    run = (prev !== null && Math.round((t - prev) / 86400000) === 7) ? run + 1 : 1;
+    prev = t;
+    best = Math.max(best, run);
+  });
+  return best;
+}
+
+function badgeStats() {
+  const history = getHistory();
+  let volume = 0, cardio = 0, prs = 0, wide = 0;
+  history.forEach(function (w, i) {
+    volume += workoutTotals(w).volume;
+    w.exercises.forEach(function (ex) {
+      if (isCardio(ex.name)) ex.sets.forEach(function (s) { cardio += parseFloat(s.mins) || 0; });
+    });
+    prs += findPRs(w.exercises, history.slice(0, i)).length;
+  });
+
+  // Most muscle groups trained in a single week
+  const weekMuscles = {};
+  history.forEach(function (w) {
+    const k = weekStartKey(w.date);
+    const set = (weekMuscles[k] = weekMuscles[k] || {});
+    w.exercises.forEach(function (ex) {
+      const l = library.find(function (q) { return q.name === ex.name; });
+      if (l && l.muscle !== "cardio") set[l.muscle] = true;
+    });
+  });
+  Object.keys(weekMuscles).forEach(function (k) { wide = Math.max(wide, Object.keys(weekMuscles[k]).length); });
+
+  const bw = latestBodyWeight();
+  const ratio = function (name) { return bw > 0 ? bestE1rm(name) / bw : 0; };
+  const reached = (goals.targets || []).filter(function (t) { try { return targetProgress(t).pct >= 1; } catch (err) { return false; } }).length;
+
+  return {
+    workouts: history.length, weekStreak: bestWeekStreak(history), volume: volume, prs: prs, cardio: cardio,
+    wide: wide, reached: reached, hasBw: bw > 0,
+    bench: ratio("Barbell Bench Press"), squat: ratio("Barbell Back Squat"), dead: ratio("Deadlift")
+  };
+}
+
+function achievementList() {
+  const s = badgeStats();
+  const n = function (v) { return Math.round(v).toLocaleString(); };
+  const kgText = function (kg) { return n(toDisp(kg)) + " " + unit(); };
+  const A = [];
+  const add = function (id, icon, name, desc, cur, goal, text) { A.push({ id: id, icon: icon, name: name, desc: desc, cur: cur, goal: goal, text: text, earned: cur >= goal }); };
+
+  [[1, "🔥", "First rep"], [10, "💪", "Ten down"], [25, "🏅", "Quarter century"], [50, "🥈", "Fifty strong"], [100, "👑", "Centurion"]].forEach(function (t) {
+    add("w" + t[0], t[1], t[2], t[0] === 1 ? "Log your first workout" : "Log " + t[0] + " workouts", s.workouts, t[0], s.workouts + " / " + t[0]);
+  });
+  [[4, "📅", "Month of habit"], [12, "🗓️", "Season of habit"]].forEach(function (t) {
+    add("ws" + t[0], t[1], t[2], t[0] + " weeks in a row hitting your weekly goal", s.weekStreak, t[0], s.weekStreak + " / " + t[0] + " weeks");
+  });
+  [[10000, "🏋️", "Ten tonnes"], [100000, "🚛", "Hundred tonnes"], [1000000, "🌍", "Million club"]].forEach(function (t) {
+    add("v" + t[0], t[1], t[2], "Lift " + kgText(t[0]) + " in total", s.volume, t[0], kgText(s.volume) + " / " + kgText(t[0]));
+  });
+  add("pr1", "🏆", "Record breaker", "Set your first personal record", s.prs, 1, s.prs + " / 1");
+  add("pr10", "🎖️", "Ten records", "Set 10 personal records", s.prs, 10, s.prs + " / 10");
+  [["bench", "Barbell Bench Press", 1, "Bodyweight bench", "🧱"], ["squat", "Barbell Back Squat", 1.5, "1.5× bodyweight squat", "🦵"], ["dead", "Deadlift", 2, "Double bodyweight deadlift", "⛓️"]].forEach(function (t) {
+    add("r" + t[0], t[4], t[3], t[1] + " estimated max of " + t[2] + "× your bodyweight" + (s.hasBw ? "" : " (log your weight in Body first)"), s[t[0]], t[2], s.hasBw ? (Math.round(s[t[0]] * 100) / 100) + "× / " + t[2] + "×" : "Needs a weigh-in");
+  });
+  add("c60", "🏃", "Getting the miles in", "60 minutes of cardio in total", s.cardio, 60, n(s.cardio) + " / 60 min");
+  add("c600", "🫀", "Engine built", "600 minutes of cardio in total", s.cardio, 600, n(s.cardio) + " / 600 min");
+  add("wide", "🧩", "Well rounded", "Train 8 muscle groups in one week", s.wide, 8, s.wide + " / 8 groups");
+  add("tgt", "🎯", "On target", "Reach one of your targets", s.reached, 1, s.reached + " / 1");
+  return A;
+}
+
+function earnedBadgeIds() { return achievementList().filter(function (a) { return a.earned; }).map(function (a) { return a.id; }); }
+
+// Badges earned since you last looked. Marks them as seen.
+function takeNewBadges() {
+  const seen = load("badgesSeen", null);
+  const now = achievementList().filter(function (a) { return a.earned; });
+  if (seen === null) { save("badgesSeen", now.map(function (a) { return a.id; })); return []; }
+  const fresh = now.filter(function (a) { return seen.indexOf(a.id) < 0; });
+  if (fresh.length) save("badgesSeen", seen.concat(fresh.map(function (a) { return a.id; })));
+  return fresh;
+}
+
+function renderAchievements() {
+  const el = $("ach-card");
+  if (!el) return;
+  const list = achievementList();
+  const got = list.filter(function (a) { return a.earned; }).length;
+  el.innerHTML = `<div class="feed-meta" style="margin-bottom:.8rem">${got} of ${list.length} earned</div><div class="ach-grid">` +
+    list.map(function (a) {
+      const pct = Math.max(0, Math.min(100, Math.round(a.cur / a.goal * 100)));
+      return `<div class="ach${a.earned ? "" : " locked"}">
+        <div class="ach-ic">${a.icon}</div>
+        <div class="ach-name">${esc(a.name)}</div>
+        <div class="ach-desc">${esc(a.desc)}</div>
+        ${a.earned ? `<div class="ach-got">Earned</div>` : `<div class="ach-bar"><div style="width:${pct}%"></div></div><div class="ach-text">${esc(a.text)}</div>`}
+      </div>`;
+    }).join("") + `</div>`;
+}
+
+
+// =====================================================================
 // START
 // =====================================================================
+// First run of v2.4: mark badges you already have as seen, so you are not flooded with notices
+if (load("badgesSeen", null) === null) save("badgesSeen", earnedBadgeIds());
+
+function maybeWelcome() {
+  if (load("onboarded", false)) return;
+  const existing = getHistory().length || localStorage.getItem("selectedEquipment") !== null || localStorage.getItem("goals") !== null;
+  if (existing) save("onboarded", true);   // you were here before the welcome existed
+  else openWelcome();
+}
+
 function renderAll() {
   renderEquipment();
   renderGoals();
+  renderTargets();
+  renderProgramme();
+  renderReadiness();
   renderSettings();
   renderGear();
   renderCustom();
@@ -3631,6 +5294,8 @@ renderAll();
 // Reopen on the tab you were last using
 const lastTab = load("lastTab", null);
 if (typeof lastTab === "string" && $(lastTab)) showTab(lastTab);
+
+maybeWelcome();   // brand-new here? walk through a quick setup
 
 // Lets the app install to your home screen and open offline.
 // (Browsers only allow this on https:// or localhost.)
