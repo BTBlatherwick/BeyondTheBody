@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "2.6.1";
+const APP_VERSION = "2.7.0";
 
 // =====================================================================
 // SMALL HELPERS
@@ -17,8 +17,17 @@ function load(key, fallback) {
     return v == null ? fallback : v;
   } catch (e) { return fallback; }
 }
+let saveWarned = false;
 function save(key, value) {
-  try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+  try { localStorage.setItem(key, JSON.stringify(value)); }
+  catch (e) {
+    // Usually means the phone's storage for this app is full. Say so once, clearly.
+    if (!saveWarned) {
+      saveWarned = true;
+      const w = document.getElementById("save-warn");
+      if (w && w.classList) w.classList.add("show");
+    }
+  }
 }
 
 // Makes sure text typed by you can't break the page's HTML
@@ -2064,13 +2073,52 @@ function hintFor(ex, stat) {
   }).join(", ");
 
   const withUnit = last.sets.some(function (s) { return parseFloat(s.weight) > 0; }) ? " (" + unit() + ")" : "";
-  let text = "Last time" + withUnit + ": " + lastText;
+  // No "to beat" line when the plan is deliberately easing off (a stall or a deload week)
+  const beat = (plateauInfo(stat) || isDeload()) ? "" : beatTarget(ex.name);
+  let text = (beat ? "<b class=\"beat-line\">To beat: " + beat + "</b><br>" : "") + "Last time" + withUnit + ": " + lastText;
 
   const sug = suggestion(ex.name, ex.target);
   if (sug) text += "<br>Suggested: " + fmtW(sug.kg) + " " + unit() + ". " + sug.why + ".";
   if (last.note) text += "<br>Note last time: " + esc(last.note);
   if (plateauInfo(stat)) text += "<br>⚠ Stalled: no new best in your last 3 sessions. Try one more rep per set, a lighter week, or a variation.";
   return text;
+}
+
+// ----- Beat last time -----
+// The working sets (no warm-ups) from the last session of this exercise
+function lastWorkingSets(name) {
+  const last = lastPerformance(name);
+  if (!last) return null;
+  const sets = last.sets.filter(function (s) { return !s.warmup && (parseInt(s.reps) || 0) > 0; });
+  return sets.length ? sets : null;
+}
+// Set number n (1, 2, 3...) from last time. Past the end? Use the final set.
+function lastSetAt(name, n) {
+  const sets = lastWorkingSets(name);
+  return sets ? (sets[n - 1] || sets[sets.length - 1]) : null;
+}
+// Is this set better than the same set last time?
+function beatsLast(s, prev) {
+  if (!prev) return false;
+  const kg = parseFloat(s.weight) || 0, reps = parseInt(s.reps) || 0;
+  const pkg = parseFloat(prev.weight) || 0, preps = parseInt(prev.reps) || 0;
+  if (reps <= 0) return false;
+  if (kg <= 0 && pkg <= 0) return reps > preps;              // bodyweight: more reps
+  return e1rm(kg, reps) > e1rm(pkg, preps) + 0.01;
+}
+// A short "do this to improve" line, built from your best set last time
+function beatTarget(name) {
+  const sets = lastWorkingSets(name);
+  if (!sets) return "";
+  let best = sets[0];
+  sets.forEach(function (s) {
+    const a = e1rm(parseFloat(s.weight) || 0, parseInt(s.reps) || 0), b = e1rm(parseFloat(best.weight) || 0, parseInt(best.reps) || 0);
+    if (a > b || (a === b && (parseInt(s.reps) || 0) > (parseInt(best.reps) || 0))) best = s;
+  });
+  const kg = parseFloat(best.weight) || 0, reps = parseInt(best.reps) || 0;
+  if (kg <= 0) return (reps + 1) + " reps";
+  const step = unit() === "lb" ? fromDisp(5) : 2.5;
+  return fmtW(kg) + " × " + (reps + 1) + " or " + fmtW(kg + step) + " × " + reps;
 }
 
 // Did this workout beat any previous best? (compares estimated one-rep max)
@@ -2214,11 +2262,15 @@ function renderWorkout() {
         return;
       }
       const shownWeight = (s.weight === "" || s.weight == null) ? "" : fmtW(s.weight);
-      html += `<div class="set-row w5${s.done ? " done" : ""}${s.warmup ? " warm" : ""}">
-        <div class="set-num">${label}</div>
-        <input class="set-input" inputmode="decimal" placeholder="0"
+      // Last time's numbers for this same set show faintly in the empty boxes
+      const prev = s.warmup ? null : lastSetAt(ex.name, n);
+      const prevKg = prev ? (parseFloat(prev.weight) || 0) : 0;
+      const beat = s.done && beatsLast(s, prev);
+      html += `<div class="set-row w5${s.done ? " done" : ""}${s.warmup ? " warm" : ""}${beat ? " beat" : ""}">
+        <div class="set-num">${beat ? "▲" : label}</div>
+        <input class="set-input" inputmode="decimal" placeholder="${prevKg > 0 ? fmtW(prevKg) : "0"}"
                value="${esc(shownWeight)}" data-ex="${ei}" data-set="${si}" data-field="weight">
-        <input class="set-input" inputmode="numeric" placeholder="${esc(ex.target)}"
+        <input class="set-input" inputmode="numeric" placeholder="${prev ? esc(String(parseInt(prev.reps) || ex.target)) : esc(ex.target)}"
                value="${esc(s.reps)}" data-ex="${ei}" data-set="${si}" data-field="reps">
         ${s.warmup ? "<div></div>" : `<select class="rpe" data-ex="${ei}" data-set="${si}" data-field="rpe">${rpeOptions(s.rpe)}</select>`}
         <button class="check" data-action="toggle" data-ex="${ei}" data-set="${si}">✓</button>
@@ -2307,7 +2359,13 @@ $("workout-list").addEventListener("click", function (e) {
     s.done = !s.done;
     if (s.done) {
       if (!workout.startedAt) workout.startedAt = Date.now();
-      // Ticked without typing reps? Log the bottom of the target range
+      // Ticked without typing? Log the same as last time (the faint numbers), else the bottom of the target range
+      if (!isCardio(ex.name) && !s.warmup) {
+        const nth = ex.sets.slice(0, Number(btn.dataset.set) + 1).filter(function (x) { return !x.warmup; }).length;
+        const prev = lastSetAt(ex.name, nth);
+        if (prev && (s.weight === "" || s.weight == null) && (parseFloat(prev.weight) || 0) > 0) s.weight = parseFloat(prev.weight);
+        if (prev && String(s.reps).trim() === "") s.reps = String(parseInt(prev.reps) || "");
+      }
       if (!isCardio(ex.name) && String(s.reps).trim() === "") s.reps = String(parseInt(ex.target) || "");
       if (s.warmup) startRest(45);
       else { const r = restAfterSet(ei); startRest(r.secs, r.label); }
@@ -2613,6 +2671,15 @@ $("overlay").addEventListener("click", function (e) {
 // =====================================================================
 // FEED
 // =====================================================================
+// 2,697,000 -> "2.7M" so big totals fit on small screens
+function bigNum(v) {
+  v = Math.round(v);
+  return v >= 1000000 ? (Math.round(v / 10000) / 100) + "M" : v.toLocaleString();
+}
+
+const FEED_PAGE = 20;
+let feedLimit = FEED_PAGE;
+
 function renderFeed() {
   const el = $("feed-list");
   const history = getHistory();
@@ -2623,7 +2690,9 @@ function renderFeed() {
   }
 
   // Keep each workout's real position so Edit/Delete hit the right one
-  const items = history.map(function (w, i) { return { w: w, i: i }; }).reverse();
+  const all = history.map(function (w, i) { return { w: w, i: i }; }).reverse();
+  const items = all.slice(0, feedLimit);   // newest first, a page at a time so it stays quick
+  const left = all.length - items.length;
 
   el.innerHTML = items.map(function (item) {
     const w = item.w;
@@ -2672,12 +2741,13 @@ function renderFeed() {
         <button class="tool" data-a="feed-del" data-i="${item.i}">Delete</button>
       </div>
     </div>`;
-  }).join("");
+  }).join("") + (left > 0 ? `<button class="btn ghost" data-a="feed-more">Show ${Math.min(FEED_PAGE, left)} more (${left} older)</button>` : "");
 }
 
 $("feed-list").addEventListener("click", function (e) {
   const b = e.target.closest("[data-a]");
   if (!b) return;
+  if (b.dataset.a === "feed-more") { feedLimit += FEED_PAGE; renderFeed(); return; }
   const index = Number(b.dataset.i);
 
   if (b.dataset.a === "feed-edit") openEditor(index);
@@ -2761,7 +2831,7 @@ function renderProgress() {
   $("stats").innerHTML =
     `<div class="stat"><div class="stat-num">${Math.round(score)}</div><div class="stat-lbl">Strength score</div></div>
      <div class="stat"><div class="stat-num">${history.length}</div><div class="stat-lbl">Workouts</div></div>
-     <div class="stat"><div class="stat-num">${Math.round(toDisp(totalVolume)).toLocaleString()}</div><div class="stat-lbl">${unit()} lifted</div></div>`;
+     <div class="stat"><div class="stat-num">${bigNum(toDisp(totalVolume))}</div><div class="stat-lbl">${unit()} lifted</div></div>`;
 
   // Empty state
   if (!names.length) {
@@ -4265,7 +4335,7 @@ function buildBackup() {
 // Checks a backup and, if it looks right, writes it into storage (replacing what's there)
 function applyBackup(backup) {
   if (!backup || backup.app !== "gymapp" || !backup.data || typeof backup.data !== "object") {
-    return { ok: false, error: "That doesn’t look like a GymApp backup file." };
+    return { ok: false, error: "That doesn’t look like a BTB backup file." };
   }
   const d = backup.data;
 
@@ -4314,19 +4384,82 @@ function applyBackup(backup) {
   return { ok: true };
 }
 
-function exportBackup() {
-  const blob = new Blob([JSON.stringify(buildBackup(), null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "gymapp-backup-" + dateKey(new Date()) + ".json";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+// ----- photos in the backup -----
+// A photo is stored as a "blob" (raw image data). A backup file is text, so each one is turned into text and back.
+function blobToText(blob) {
+  return new Promise(function (resolve, reject) {
+    const r = new FileReader();
+    r.onload = function () { resolve(r.result); };
+    r.onerror = function () { reject(r.error); };
+    r.readAsDataURL(blob);
+  });
+}
+function textToBlob(text) {
+  const m = /^data:([^;,]+)?(;base64)?,(.*)$/.exec(String(text || ""));
+  if (!m || !m[2]) return null;
+  const bin = atob(m[3]);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: m[1] || "image/jpeg" });
+}
+function photosForBackup() {
+  return photoStore.all().then(function (list) {
+    return Promise.all((list || []).map(function (p) {
+      return Promise.all([blobToText(p.blob), blobToText(p.thumb)]).then(function (t) {
+        return { id: p.id, date: p.date, tag: p.tag, note: p.note || "", added: p.added, w: p.w, h: p.h, full: t[0], thumb: t[1] };
+      });
+    }));
+  });
+}
+// Puts the photos from a backup into storage, replacing the ones on this phone
+function restorePhotos(list) {
+  const good = (list || []).filter(function (p) {
+    return p && typeof p.id === "string" && /^\d{4}-\d{2}-\d{2}$/.test(String(p.date)) && typeof p.full === "string" && typeof p.thumb === "string";
+  });
+  return photoStore.all().then(function (old) {
+    return Promise.all((old || []).map(function (p) { return photoStore.remove(p.id); }));
+  }).then(function () {
+    let chain = Promise.resolve(), n = 0;
+    good.forEach(function (p) {
+      const full = textToBlob(p.full), thumb = textToBlob(p.thumb);
+      if (!full || !thumb) return;
+      chain = chain.then(function () {
+        return photoStore.put({ id: p.id, date: p.date, tag: p.tag || "other", note: p.note || "", added: p.added || Date.now(), w: p.w, h: p.h, blob: full, thumb: thumb })
+          .then(function () { n++; });
+      });
+    });
+    return chain.then(function () { return n; });
+  });
+}
 
-  save("lastBackup", Date.now());
-  renderBackupStatus();
+function exportBackup() {
+  const backup = buildBackup();
+  const status = $("backup-status");
+  status.textContent = "Preparing your backup…";
+  // Photos are added if they can be read; if not, the rest is still saved
+  return photosForBackup().catch(function () { return null; }).then(function (list) {
+    if (list) backup.photos = list;
+    const blob = new Blob([JSON.stringify(backup)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "btb-backup-" + dateKey(new Date()) + ".json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+
+    save("lastBackup", Date.now());
+    save("lastBackupPhotos", list ? list.length : -1);
+    renderBackupStatus();
+  });
+}
+
+function backupPhotoNote() {
+  const n = load("lastBackupPhotos", null);
+  if (n === null) return "";
+  if (n < 0) return " (photos could not be included)";
+  return n === 0 ? "" : " with " + n + (n === 1 ? " photo" : " photos");
 }
 
 function renderBackupStatus() {
@@ -4334,7 +4467,7 @@ function renderBackupStatus() {
   const workouts = getHistory().length;
 
   $("backup-status").textContent = last
-    ? "Last backup: " + new Date(last).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) + "."
+    ? "Last backup: " + new Date(last).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) + backupPhotoNote() + "."
     : "You haven’t backed up yet.";
 
   // A gentle nudge on Home once you have some history worth protecting
@@ -4359,11 +4492,18 @@ $("import-file").addEventListener("change", function (e) {
     catch (err) { alert("That file couldn’t be read."); return; }
 
     const n = backup && backup.data && Array.isArray(backup.data.workoutHistory) ? backup.data.workoutHistory.length : 0;
-    if (!confirm("Restore this backup? It replaces everything currently in the app (the backup has " + n + " workouts).")) return;
+    const hasPhotos = backup && Array.isArray(backup.photos);
+    const pn = hasPhotos ? backup.photos.length : 0;
+    if (!confirm("Restore this backup? It replaces everything currently in the app (the backup has " + n + " workouts" +
+                 (hasPhotos ? " and " + pn + (pn === 1 ? " photo" : " photos") : "; it has no photos, so the photos on this phone are left alone") + ").")) return;
 
     const result = applyBackup(backup);
     if (!result.ok) { alert(result.error); return; }
-    location.reload();
+    if (!hasPhotos) { location.reload(); return; }
+    $("backup-status").textContent = "Restoring photos…";
+    restorePhotos(backup.photos)
+      .catch(function () { alert("Your workouts were restored, but the photos couldn’t be."); })
+      .then(function () { location.reload(); });
   };
   reader.readAsText(file);
   e.target.value = "";   // lets you pick the same file again later

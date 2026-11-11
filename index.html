@@ -180,8 +180,8 @@
   </section>
 
   <section class="screen" id="feed">
-    <h1>Feed</h1>
-    <p class="sub">Your workout history.</p>
+    <h1>History</h1>
+    <p class="sub">Every workout you’ve logged.</p>
     <div id="feed-list"></div>
   </section>
 
@@ -308,6 +308,12 @@
   </div>
 
   <div class="welcome" id="welcome"></div>
+
+  <!-- Shown only if the phone refuses to save -->
+  <div class="save-warn" id="save-warn" role="alert">
+    <div><b>Couldn’t save.</b> This phone’s storage for the app may be full. Go to Me → Settings and download a backup now.</div>
+    <button id="save-warn-x" aria-label="Close" onclick="this.parentNode.classList.remove('show')">✕</button>
+  </div>
 
   <div class="update-banner" id="update-banner">
     <span id="update-text">Update available</span>
