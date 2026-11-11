@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "2.4.0";
+const APP_VERSION = "2.5.0";
 
 // =====================================================================
 // SMALL HELPERS
@@ -106,24 +106,78 @@ $("settings-card").addEventListener("click", function (e) {
 const tabs = document.querySelectorAll(".tab");
 const screens = document.querySelectorAll(".screen");
 
-function showTab(targetId) {
+// Four tabs along the bottom; some of them hold a few sub-tabs along the top.
+// A sub-tab is either a whole screen, or one part (data-sub) of a bigger screen.
+const NAV = {
+  home:     { subs: [{ screen: "home", label: "Home" }] },
+  train:    { subs: [{ screen: "workout", label: "Workout" }, { screen: "library", label: "Library" }] },
+  progress: { subs: [{ screen: "progress", sub: "charts", label: "Charts" }, { screen: "progress", sub: "body", label: "Body" },
+                     { screen: "progress", sub: "awards", label: "Awards" }, { screen: "feed", label: "History" }] },
+  me:       { subs: [{ screen: "gym", sub: "goals", label: "Goals" }, { screen: "gym", sub: "equip", label: "Gym" },
+                     { screen: "gym", sub: "settings", label: "Settings" }] }
+};
+
+function navFind(screenId, sub) {
+  const names = Object.keys(NAV);
+  for (let g = 0; g < names.length; g++) {
+    const subs = NAV[names[g]].subs;
+    for (let i = 0; i < subs.length; i++) {
+      if (subs[i].screen === screenId && (!sub || !subs[i].sub || subs[i].sub === sub)) return { group: names[g], index: i };
+    }
+  }
+  return { group: "home", index: 0 };
+}
+
+let lastSubs = load("lastSubs", {});   // which sub-tab each screen was on
+
+function showTab(screenId, sub) {
+  if (!$(screenId)) screenId = "home";
+  const found = navFind(screenId, sub);
+  const subs = NAV[found.group].subs;
+  // Which part of this screen? the one asked for, else the one you were last on, else the first
+  const mine = subs.filter(function (s) { return s.screen === screenId; });
+  let part = sub || lastSubs[screenId];
+  if (!mine.some(function (s) { return (s.sub || "") === (part || ""); })) part = mine[0].sub;
+  if (part) { lastSubs[screenId] = part; save("lastSubs", lastSubs); }
+
   screens.forEach(function (s) { s.classList.remove("active"); });
-  tabs.forEach(function (t) { t.classList.remove("active"); });
+  tabs.forEach(function (t) { t.classList.toggle("active", t.dataset.group === found.group); });
+  const scr = $(screenId);
+  scr.classList.add("active");
+  scr.querySelectorAll(".sub-view").forEach(function (v) { v.classList.toggle("on", v.dataset.sub === part); });
 
-  $(targetId).classList.add("active");
-  document.querySelector('[data-target="' + targetId + '"]').classList.add("active");
+  // Sub-tab row
+  let bar = scr.querySelector(".subnav");
+  if (subs.length < 2) { if (bar) bar.remove(); }
+  else {
+    if (!bar) { bar = document.createElement("div"); bar.className = "subnav"; scr.insertBefore(bar, scr.firstChild); }
+    bar.innerHTML = subs.map(function (s, i) {
+      const on = s.screen === screenId && (s.sub || "") === (part || "");
+      return '<button class="subtab' + (on ? " on" : "") + '" data-screen="' + s.screen + '" data-sub="' + (s.sub || "") + '">' + s.label + "</button>";
+    }).join("");
+  }
 
-  if (targetId === "progress") renderProgress();
-  if (targetId === "library") renderLibrary();
-
-  save("lastTab", targetId);
+  groupLast[found.group] = { screen: screenId, sub: part || "" };
+  save("groupLast", groupLast);
+  save("lastTab", screenId);
+  if (screenId === "progress") renderProgress();
+  if (screenId === "library") renderLibrary();
   window.scrollTo(0, 0);
 }
 
+let groupLast = load("groupLast", {});   // where you were last inside each bottom tab
+
 tabs.forEach(function (tab) {
   tab.addEventListener("click", function () {
-    showTab(tab.dataset.target);
+    const g = tab.dataset.group;
+    const s = groupLast[g] || NAV[g].subs[0];
+    showTab(s.screen, s.sub || undefined);
   });
+});
+
+document.addEventListener("click", function (e) {
+  const b = e.target.closest(".subtab");
+  if (b) showTab(b.dataset.screen, b.dataset.sub || undefined);
 });
 
 
@@ -4581,7 +4635,7 @@ function finishWelcome(apply) {
   save("onboarded", true);
   $("welcome").classList.remove("show");
   renderAll();
-  showTab(apply && ob.preset === "own" ? "gym" : "home");
+  showTab(apply && ob.preset === "own" ? "gym" : "home", apply && ob.preset === "own" ? "equip" : undefined);
 }
 
 $("welcome").addEventListener("click", function (e) {
@@ -5294,6 +5348,7 @@ renderAll();
 // Reopen on the tab you were last using
 const lastTab = load("lastTab", null);
 if (typeof lastTab === "string" && $(lastTab)) showTab(lastTab);
+else showTab("home");
 
 maybeWelcome();   // brand-new here? walk through a quick setup
 

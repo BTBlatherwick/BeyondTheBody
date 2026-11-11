@@ -13,6 +13,12 @@
       // A PIN is set: cover the app straight away, before anything else shows
       if (localStorage.getItem("pin")) document.documentElement.setAttribute("data-locked", "1");
     } catch (e) { document.documentElement.setAttribute("data-theme", "clean"); }
+    // Opened again within 30 minutes? Play the short version of the opening animation
+    try {
+      var last = Number(localStorage.getItem("splashAt")) || 0;
+      if (Date.now() - last < 30 * 60 * 1000) document.documentElement.setAttribute("data-splash", "short");
+      localStorage.setItem("splashAt", String(Date.now()));
+    } catch (e) {}
   </script>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
@@ -25,6 +31,13 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- ===== SPLASH ===== -->
+  <div class="splash" id="splash" aria-hidden="true">
+    <div class="splash-glow"></div>
+    <img class="splash-logo" src="logo-mark.svg" alt="">
+    <div class="splash-name">Beyond The Body</div>
+  </div>
+
 
   <!-- ===== SCREENS ===== -->
   <section class="screen active" id="home">
@@ -118,6 +131,7 @@
   <section class="screen" id="progress">
     <h1>Progress</h1>
     <p class="sub">Your lifts over time.</p>
+    <div class="sub-view" data-sub="charts">
     <div class="stats" id="stats"></div>
     <div id="attention"></div>
 
@@ -126,9 +140,6 @@
 
     <h2>Weekly trend</h2>
     <div class="card" id="weekly-card"></div>
-
-    <h2>Achievements</h2>
-    <div class="card" id="ach-card"></div>
 
     <h2>Exercise trend</h2>
     <div class="card">
@@ -140,6 +151,8 @@
     <h2>Personal records</h2>
     <div class="card" id="prs"></div>
 
+    </div>
+    <div class="sub-view" data-sub="body">
     <h2>Body</h2>
     <div class="card" id="body-form"></div>
     <div class="card" id="body-chart"></div>
@@ -147,6 +160,12 @@
     <h2>Photos</h2>
     <div class="card" id="photo-add"></div>
     <div class="card" id="photo-grid"></div>
+    </div>
+    <div class="sub-view" data-sub="awards">
+    <h2>Achievements</h2>
+    <div class="card" id="ach-card"></div>
+
+    </div>
   </section>
 
   <section class="screen" id="feed">
@@ -156,14 +175,10 @@
   </section>
 
   <section class="screen" id="gym">
-    <h1>Your gym</h1>
-    <p class="sub">Tell the app about your training.</p>
+    <h1>Me</h1>
+    <p class="sub">Your goals, gym and settings.</p>
 
-    <h2>Equipment</h2>
-    <input type="search" class="select eq-search" id="eq-search" placeholder="Search equipment" autocomplete="off">
-    <div id="equipment-list"></div>
-    <p class="count" id="count"></p>
-
+    <div class="sub-view" data-sub="goals">
     <h2>Goals</h2>
     <div class="card" id="goals-card"></div>
 
@@ -173,14 +188,23 @@
     <h2>Programme</h2>
     <div class="card" id="programme-card"></div>
 
-    <h2>Settings</h2>
-    <div class="card" id="settings-card"></div>
+    </div>
+    <div class="sub-view" data-sub="equip">
+    <h2>Equipment</h2>
+    <input type="search" class="select eq-search" id="eq-search" placeholder="Search equipment" autocomplete="off">
+    <div id="equipment-list"></div>
+    <p class="count" id="count"></p>
 
     <h2>Your weights</h2>
     <div class="card" id="gear-card"></div>
 
     <h2>Custom exercises</h2>
     <div class="card" id="custom-card"></div>
+
+    </div>
+    <div class="sub-view" data-sub="settings">
+    <h2>Settings</h2>
+    <div class="card" id="settings-card"></div>
 
     <h2>Security</h2>
     <div class="card" id="pin-card"></div>
@@ -207,6 +231,7 @@
       <div class="feed-meta" id="version-status" style="margin-top:.5rem"></div>
     </div>
 
+    </div>
   </section>
 
   <section class="screen" id="library">
@@ -238,29 +263,21 @@
 
   <!-- ===== TAB BAR ===== -->
   <nav class="tabbar">
-    <button class="tab active" data-target="home">
+    <button class="tab active" data-group="home">
       <svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/></svg>
       Home
     </button>
-    <button class="tab" data-target="workout">
-      <svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg>
-      Workout
+    <button class="tab" data-group="train">
+      <svg viewBox="0 0 24 24"><path d="M6.5 6.5v11"/><path d="M17.5 6.5v11"/><path d="M3.5 9v6"/><path d="M20.5 9v6"/><path d="M6.5 12h11"/></svg>
+      Train
     </button>
-    <button class="tab" data-target="library">
-      <svg viewBox="0 0 24 24"><path d="M5 4h10a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h10"/></svg>
-      Library
-    </button>
-    <button class="tab" data-target="progress">
+    <button class="tab" data-group="progress">
       <svg viewBox="0 0 24 24"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="15 7 21 7 21 13"/></svg>
       Progress
     </button>
-    <button class="tab" data-target="feed">
-      <svg viewBox="0 0 24 24"><line x1="9" y1="6" x2="21" y2="6"/><line x1="9" y1="12" x2="21" y2="12"/><line x1="9" y1="18" x2="21" y2="18"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/></svg>
-      Feed
-    </button>
-    <button class="tab" data-target="gym">
-      <svg viewBox="0 0 24 24"><path d="M6.5 6.5v11"/><path d="M17.5 6.5v11"/><path d="M3.5 9v6"/><path d="M20.5 9v6"/><path d="M6.5 12h11"/></svg>
-      Gym
+    <button class="tab" data-group="me">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/></svg>
+      Me
     </button>
   </nav>
 
@@ -289,6 +306,22 @@
     </div>
   </div>
 
+  <script>
+    // Fades the opening animation away (tap it to skip). Kept apart from app.js so it can never get stuck.
+    (function () {
+      var el = document.getElementById("splash");
+      if (!el) return;
+      var short = document.documentElement.getAttribute("data-splash") === "short";
+      var gone = false;
+      function hide() {
+        if (gone) return; gone = true;
+        el.classList.add("out");
+        setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 600);
+      }
+      el.addEventListener("click", hide);
+      setTimeout(hide, short ? 700 : 2300);
+    })();
+  </script>
   <script src="app.js"></script>
 </body>
 </html>

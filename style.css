@@ -984,3 +984,30 @@ select.set-input { width: 100%; }
 .ach-bar { height: 5px; border-radius: 3px; background: rgba(255,255,255,.1); margin-top: .5rem; overflow: hidden; }
 .ach-bar div { height: 100%; background: var(--accent); }
 .ach-text { color: var(--muted); font-size: .65rem; margin-top: .25rem; }
+
+
+/* ===== v2.5: sub-tabs ===== */
+.sub-view { display: none; }
+.sub-view.on { display: block; }
+.subnav { display: flex; gap: .4rem; overflow-x: auto; margin: 0 0 1rem; padding: .1rem 0 .3rem; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.subnav::-webkit-scrollbar { display: none; }
+.subtab { flex: 0 0 auto; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.04); color: var(--muted); border-radius: 999px; padding: .45rem .95rem; font: inherit; font-size: .82rem; cursor: pointer; }
+.subtab.on { color: #fff; background: var(--pill, rgba(192,57,43,.28)); border-color: var(--accent); }
+[data-theme="grit"] .subtab { border-radius: 2px; text-transform: uppercase; letter-spacing: .08em; font-size: .7rem; }
+.tabbar .tab { font-size: .72rem; }
+[data-theme="grit"] .tab { font-size: .62rem; }
+
+/* ===== v2.5: opening animation ===== */
+.splash { position: fixed; inset: 0; z-index: 200; background: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.6rem; transition: opacity .55s ease; }
+.splash.out { opacity: 0; pointer-events: none; }
+.splash-glow { position: absolute; width: 90vmin; height: 90vmin; border-radius: 50%; background: radial-gradient(circle, rgba(192,57,43,.38) 0%, rgba(192,57,43,.1) 38%, transparent 68%); opacity: 0; animation: splash-ember 2.2s ease-out forwards; }
+.splash-logo { position: relative; width: min(46vw, 210px); height: auto; opacity: 0; transform: scale(1.08); filter: blur(6px) brightness(.6); animation: splash-in 1.5s cubic-bezier(.2,.7,.2,1) .15s forwards; }
+.splash-name { position: relative; color: #b9b4a8; font-size: .78rem; text-transform: uppercase; letter-spacing: .6em; padding-left: .6em; opacity: 0; animation: splash-text 1.3s ease .9s forwards; }
+@keyframes splash-in { to { opacity: 1; transform: scale(1); filter: blur(0) brightness(1); } }
+@keyframes splash-ember { 0% { opacity: 0; transform: scale(.7); } 45% { opacity: 1; } 100% { opacity: .75; transform: scale(1.08); } }
+@keyframes splash-text { from { opacity: 0; letter-spacing: .9em; } to { opacity: .9; letter-spacing: .6em; } }
+[data-splash="short"] .splash-glow, [data-splash="short"] .splash-logo, [data-splash="short"] .splash-name { animation-duration: .45s; animation-delay: 0s; }
+@media (prefers-reduced-motion: reduce) {
+  .splash-glow, .splash-logo, .splash-name { animation: none; opacity: 1; transform: none; filter: none; }
+  .splash-glow { opacity: .6; }
+}
