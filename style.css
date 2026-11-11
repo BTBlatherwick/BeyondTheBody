@@ -243,6 +243,8 @@ h2 {
   content: ""; position: absolute; left: 7px; top: 3px; width: 6px; height: 12px;
   border: solid var(--on-accent, #fff); border-width: 0 2.5px 2.5px 0; transform: rotate(45deg);
 }
+
+
 [data-theme="clean"] .eq-ic { background: #17171a; }
 
 /* Goals and settings chips */
@@ -575,29 +577,55 @@ a.btn { display: block; text-align: center; text-decoration: none; }
 /* =====================================================================
    GRIT THEME
    Stark and quiet: near-black concrete, bone-white text, one dried-blood accent.
-   No glass, no glow {
-  --bg: #070707;
-  --card: #0e0e0e;
-  --border: #262522;
-  --text: #d8d4cc;
-  --muted: #77736b;
-  --accent: #b9b4a8;   /* bone: buttons, ticks, bars */
-  --blood: #8c2a1d;    /* the only red left: thin lines */
-  --on-accent: #0a0a0a;
-  --edge: #3a3731;
-}
+   No glass, no glow, no rounded corners. Switch it in Gym > Theme.
+   ===================================================================== */
 
-/* Type: heavy, upright { font-weight: 900; font-size: 2rem; letter-spacing: .14em; text-transform: uppercase; }
 
-/* Surfaces: solid, square {
-  background: var(--card);
-  -webkit-backdrop-filter: none; backdrop-filter: none;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--edge);
-  border-radius: 2px;
-}
 
-/* Filled things get dark text { color: var(--on-accent); }
+/* Type: heavy, upright, uppercase where it counts */
+
+
+
+
+
+
+/* Surfaces: solid, square, a heavy edge on the left */
+
+
+
+
+
+
+
+
+
+/* Tab bar: a flat slab fixed to the bottom */
+
+
+
+
+
+/* Controls */
+
+
+
+
+
+
+/* Overlays */
+
+
+
+
+
+
+/* Filled things get dark text, since the fill is now light */
+
+
+
+
+
+
 
 /* PIN lock screen */
 .lock {
@@ -626,6 +654,9 @@ html[data-locked="1"] body > *:not(.lock) { visibility: hidden; }   /* nothing s
 .lock.cancellable .lock-x { display: block; }
 .lock .link-btn { display: none; margin-top: 1rem; }
 .lock.unlock .link-btn { display: block; }
+
+
+
 
 
 /* ---- Home pieces (plain in Grit and Classic, styled properly in Clean) ---- */
@@ -868,6 +899,7 @@ select.set-input { width: 100%; }
 /* six tabs: let them shrink so none is clipped */
 .tabbar .tab { min-width: 0; padding-left: 0; padding-right: 0; }
 [data-theme="clean"] .tab { font-size: .66rem; }
+
 .tab svg { max-width: 100%; }
 
 
@@ -913,7 +945,9 @@ select.set-input { width: 100%; }
 .subnav::-webkit-scrollbar { display: none; }
 .subtab { flex: 0 0 auto; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.04); color: var(--muted); border-radius: 999px; padding: .45rem .95rem; font: inherit; font-size: .82rem; cursor: pointer; }
 .subtab.on { color: #fff; background: var(--pill, rgba(192,57,43,.28)); border-color: var(--accent); }
+
 .tabbar .tab { font-size: .72rem; }
+
 
 /* ===== v2.5: opening animation ===== */
 .splash { position: fixed; inset: 0; z-index: 200; background: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.6rem; transition: opacity .55s ease; }
