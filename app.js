@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "2.8.0";
+const APP_VERSION = "2.9.0";
 
 // =====================================================================
 // SMALL HELPERS
@@ -442,6 +442,11 @@ function normGoals(g) {
   if (!g.readiness || typeof g.readiness !== "object") g.readiness = null;
   if (["auto", "full", "ul", "ppl", "arnold", "part"].indexOf(g.split) < 0) g.split = "auto";
   g.splitOffset = Math.max(0, parseInt(g.splitOffset) || 0);   // sessions you chose to skip past
+  // Days you train: 0 = Monday ... 6 = Sunday. Empty = whenever suits you.
+  g.trainDays = (Array.isArray(g.trainDays) ? g.trainDays : []).map(Number)
+    .filter(function (d, i, arr) { return d >= 0 && d <= 6 && d === Math.floor(d) && arr.indexOf(d) === i; }).sort();
+  if (!g.sore || typeof g.sore !== "object" || !Array.isArray(g.sore.muscles)) g.sore = null;
+  g.proteinTarget = Number(g.proteinTarget) > 0 ? Math.round(Number(g.proteinTarget)) : null;
   return g;
 }
 
@@ -574,6 +579,13 @@ function renderGoals() {
         Object.keys(SPLITS).map(function (k) {
           return `<button class="chip${goals.split === k ? " on" : ""}" data-key="split" data-value="${k}">${SPLITS[k].label}</button>`;
         }).join("") + `</div><div class="feed-meta goal-blurb">${esc(splitNote())}</div></div>`;
+      const td = goals.trainDays;
+      html += `<div class="goal-group"><div class="card-label">Training days (optional)</div><div class="chips">` +
+        DAY_NAMES.map(function (d, i) {
+          return `<button class="chip${td.indexOf(i) >= 0 ? " on" : ""}" data-day="${i}">${d}</button>`;
+        }).join("") + `</div><div class="feed-meta goal-blurb">${!td.length ? "Not set: train whenever suits you." :
+          (td.length >= 2 && td.length <= 6) ? td.length + " days picked, so days per week is " + td.length + ". Other days show as rest days on Home." :
+          "Pick between 2 and 6 days to set your days per week from this."}</div></div>`;
     }
   }
 
@@ -614,10 +626,24 @@ $("goals-card").addEventListener("click", function (e) {
     refreshPlanAfterGoalChange();
     return;
   }
+  const dayBtn = e.target.closest("[data-day]");
+  if (dayBtn) {
+    const d = Number(dayBtn.dataset.day);
+    const i = goals.trainDays.indexOf(d);
+    if (i >= 0) goals.trainDays.splice(i, 1); else goals.trainDays.push(d);
+    goals.trainDays.sort();
+    // The number of days you pick becomes your days per week
+    if (goals.trainDays.length >= 2 && goals.trainDays.length <= 6) goals.days = String(goals.trainDays.length);
+    save("goals", goals);
+    renderGoals();
+    refreshPlanAfterGoalChange();
+    return;
+  }
   const btn = e.target.closest("[data-key]");
   if (!btn) return;
   if (btn.dataset.key === "autoRest") goals.autoRest = btn.dataset.value === "1";
   else goals[btn.dataset.key] = btn.dataset.value;
+  if (btn.dataset.key === "days" && goals.trainDays.length && goals.trainDays.length !== Number(goals.days)) goals.trainDays = [];
   if (btn.dataset.key === "split") {
     // Start the new split from its first session
     const len = getSplit().length;
@@ -1017,14 +1043,22 @@ function renderUpNext() {
   const s = upcomingSessions(3);
   const own = workout.fromRoutine || workout.name !== s[0];   // a routine or custom workout is loaded instead
   const row = function (label, name, now) { return `<div class="up-row${now ? " now" : ""}"><span>${label}</span><b>${esc(name)}</b></div>`; };
+  const first = nextSessionLabel();
+  const rest = isRestDay();
+  const pill = $("hero-pill");
+  if (pill) pill.textContent = rest ? "Rest day" : trainedToday() ? "Done for today" : "Next workout";
+  const daysLine = goals.trainDays.length ? `<div class="feed-meta" style="margin-top:.7rem">Training days: ` +
+    goals.trainDays.map(function (d) { return d === todayIndex() ? "<b style=\"color:var(--text)\">" + DAY_NAMES[d] + "</b>" : DAY_NAMES[d]; }).join(" · ") +
+    (rest ? ". Today is a rest day; you can still train if you want to." : ".") + `</div>` : "";
   el.innerHTML = `<div class="card-label">Up next · ${esc(goals.split === "auto" ? autoSplitLabel() : SPLITS[goals.split].label)}</div>` +
     (own ? row("Now", workout.name, true) + row("Then", s[0]) + row("After", s[1])
-         : row("Today", s[0], true) + row("Next", s[1]) + row("Then", s[2])) +
+         : row(first, s[0], true) + row("Next", s[1]) + row("Then", s[2])) + daysLine +
     `<button class="btn ghost" id="skip-session">${own ? "Back to my split" : "Skip to next session"}</button>`;
 }
 
 function refreshHome() {
   renderUpNext();
+  renderProtein();
   renderWeekbar();
   renderObjectives();
   renderWeek();
@@ -1646,6 +1680,7 @@ function skipSession() {
 // ----- Exercises you love, and ones you never want to see -----
 let exPrefs = load("exPrefs", null);
 if (!exPrefs || !Array.isArray(exPrefs.fav) || !Array.isArray(exPrefs.ban)) exPrefs = { fav: [], ban: [] };
+if (!exPrefs.lock || typeof exPrefs.lock !== "object" || Array.isArray(exPrefs.lock)) exPrefs.lock = {};
 function isFav(name) { return exPrefs.fav.indexOf(name) >= 0; }
 function isBanned(name) { return exPrefs.ban.indexOf(name) >= 0; }
 // kind is "fav" or "ban". An exercise can't be both, so setting one clears the other.
@@ -1818,6 +1853,23 @@ function buildPlan(opts) {
     focusAdded.push(f);
   });
 
+  // Sore today? Keep one exercise at most for that muscle
+  const sore = soreToday();
+  if (sore.length) {
+    const seenSore = {};
+    slotList = slotList.filter(function (s) {
+      if (sore.indexOf(s.m) < 0) return true;
+      if (seenSore[s.m]) return false;
+      seenSore[s.m] = true;
+      return true;
+    });
+  }
+
+  // Exercises you locked into this session (if you still have the kit and haven't banned them)
+  const locked = lockedFor(planName).map(function (n) { return library.find(function (l) { return l.name === n; }); })
+    .filter(function (l) { return l && hasEquipment(l) && !isBanned(l.name); });
+  const lockedNames = locked.map(function (l) { return l.name; });
+
   const since = daysSinceMuscles();
   const weekDone = muscleCounts(0).counts;
   const tg = weeklyTargets();
@@ -1833,10 +1885,12 @@ function buildPlan(opts) {
 
   slotList.forEach(function (slot) {
     const stick = !opts.shuffle && (slot.k === "compound" || info);
-    const ex = pickExercise(slot.m, slot.k, used, stick ? lastNames : null);
+    // A locked exercise for this muscle takes the slot; otherwise pick one (never a locked one, they have their own slots)
+    const li = locked.findIndex(function (l) { return l.muscle === slot.m; });
+    const ex = li >= 0 ? locked.splice(li, 1)[0] : pickExercise(slot.m, slot.k, used.concat(lockedNames), stick ? lastNames : null);
     if (!ex) return;
     used.push(ex.name);
-    const reduce = since[slot.m] < 2 || weekDone[slot.m] >= tg[slot.m][1];
+    const reduce = since[slot.m] < 2 || weekDone[slot.m] >= tg[slot.m][1] || sore.indexOf(slot.m) >= 0;
     if (reduce && eased.indexOf(slot.m) < 0) eased.push(slot.m);
     const lead = !leadDone && ex.type === "compound";
     if (lead) leadDone = true;
@@ -1845,10 +1899,19 @@ function buildPlan(opts) {
     if (isStalled(ex.name)) why.push(ex.name + ": no progress for 3 sessions, so drop 10% and build back up");
   });
 
+  // Locked exercises whose muscle had no slot today still go in
+  locked.forEach(function (l) {
+    const rx = prescription(l, { reduce: sore.indexOf(l.muscle) >= 0 });
+    exercises.push({ name: l.name, sets: rx.sets, reps: rx.reps });
+    used.push(l.name);
+  });
+  if (lockedNames.length) why.push("Locked in: " + lockedNames.join(", "));
+  if (sore.length) why.push("Going easy on what is sore today");
+
   // Keep the session inside your time: about 3.5 minutes a set, rest included
   const budget = Math.round(Number(goals.minutes) / 3.5) + 1;
   const total = function () { return exercises.reduce(function (n, e) { return n + e.sets; }, 0); };
-  const isFocusEx = function (e) { const l = library.find(function (q) { return q.name === e.name; }); return l && goals.focus.includes(l.muscle); };
+  const isFocusEx = function (e) { const l = library.find(function (q) { return q.name === e.name; }); return (l && goals.focus.includes(l.muscle)) || lockedNames.indexOf(e.name) >= 0; };
   let trimmed = false;
   while (total() > budget) {
     let i = exercises.length - 1;
@@ -1926,6 +1989,7 @@ function renderReadiness() {
     }).join("") + `</div>`;
 }
 
+// (the soreness chips sit right under these)
 $("ready-row").addEventListener("click", function (e) {
   const b = e.target.closest("[data-r]");
   if (!b) return;
@@ -2376,9 +2440,10 @@ function renderWorkout() {
     html += `<div class="card${gl ? " grouped" : ""}">
       ${gl ? `<div class="grp-tag">${gl.kind} ${gl.tag}</div>` : ""}
       <div class="ex-head">
-        <div class="ex-name">${esc(ex.name)}</div>
+        <div class="ex-name">${canLock() && isLocked(workout.name, ex.name) ? "🔒 " : ""}${esc(ex.name)}</div>
         <div class="tools">
           <button class="tool" data-action="form" data-ex="${ei}">Form</button>
+          ${canLock() && !cardio ? `<button class="tool" data-action="lock" data-ex="${ei}">${isLocked(workout.name, ex.name) ? "Unlock" : "Lock in"}</button>` : ""}
           ${(ex.group != null || workout.exercises[ei + 1]) ? `<button class="tool" data-action="superset" data-ex="${ei}">${ex.group != null ? "Unlink" : "Superset ↓"}</button>` : ""}
           ${gearKind(ex.name) === "barbell" ? `<button class="tool" data-action="plates" data-ex="${ei}">Plates</button>` : ""}
           ${canWarm ? `<button class="tool" data-action="warmup" data-ex="${ei}">${hasWarm ? "Clear warm-up" : "Warm-up"}</button>` : ""}
@@ -2558,6 +2623,9 @@ $("workout-list").addEventListener("click", function (e) {
   if (action === "superset") toggleSuperset(ei);
 
   if (action === "swap") swapExercise(ei);
+
+  // Lock: this exercise stays in this session every week
+  if (action === "lock") toggleLock(workout.name, ex.name);
 
   // Move an exercise up or down the list
   if (action === "up" || action === "down") {
@@ -2776,6 +2844,7 @@ $("sheet").addEventListener("click", function (e) {
   if (a === "hist-close") closeSheet();
   if (a === "add-close") closeSheet();
   if (a === "lib-hist") openExerciseHistory(b.dataset.name);
+  if (a === "guided-start") startGuided(b.dataset.kind);
   if (a === "pref") {
     togglePref(b.dataset.kind, b.dataset.name);
     openLibraryDetail(b.dataset.name);
@@ -2972,6 +3041,7 @@ function renderProgress() {
   const names = Object.keys(stats).filter(function (n) { return stats[n].sessions.length > 0; });
 
   renderMuscles();
+  renderReview();
   renderWeekly();
   renderAchievements();
   renderBodyChart();
@@ -4485,7 +4555,7 @@ if (pinIsSet()) lockApp();   // locked from the very first moment
 // BACKUP AND RESTORE
 // Your data lives in this browser only. A backup is a .json file you can keep safe.
 // =====================================================================
-const BACKUP_KEYS = ["settings", "restMap", "selectedEquipment", "goals", "workoutDates", "workoutHistory", "currentWorkout", "gear", "customExercises", "routines", "deload", "bodyLog", "exPrefs"];
+const BACKUP_KEYS = ["settings", "restMap", "selectedEquipment", "goals", "workoutDates", "workoutHistory", "currentWorkout", "gear", "customExercises", "routines", "deload", "bodyLog", "exPrefs", "protein"];
 
 function buildBackup() {
   const data = {};
@@ -5445,10 +5515,11 @@ function ivRender() {
   ivTick(true);
 }
 
-function ivStart() {
-  save("intervalCfg", ivCfg);
-  const plan = intervalPlan(ivCfg);
-  ivRun = { plan: plan, idx: 0, end: Date.now() + plan[0].secs * 1000, paused: false, left: 0, lastBeep: -1, totalSecs: plan.reduce(function (n, p) { return n + p.secs; }, 0), elapsedBefore: 0 };
+// custom (optional): { phases, done, title } for a guided warm-up or cooldown
+function ivStart(custom) {
+  if (!custom) save("intervalCfg", ivCfg);
+  const plan = custom ? custom.phases : intervalPlan(ivCfg);
+  ivRun = { custom: custom || null, plan: plan, idx: 0, end: Date.now() + plan[0].secs * 1000, paused: false, left: 0, lastBeep: -1, totalSecs: plan.reduce(function (n, p) { return n + p.secs; }, 0), elapsedBefore: 0 };
   ivBeep(660, 120);
   try { if (navigator.wakeLock) navigator.wakeLock.request("screen").then(function (l) { ivWake = l; }).catch(function () {}); } catch (err) {}
   if (!ivRun.timer) ivRun.timer = setInterval(function () { ivTick(false); }, 200);
@@ -5474,6 +5545,12 @@ function ivTick(force) {
         clearInterval(r.timer);
         ivRun = null;
         try { if (ivWake) { ivWake.release(); ivWake = null; } } catch (err) {}
+        if (r.custom) {
+          $("iv-sheet").innerHTML = `<div class="card-label">${esc(r.custom.title)}</div><div class="big">Done!</div>
+            <p class="feed-meta" style="margin:.6rem 0 1rem">${esc(r.custom.done)}</p>
+            <button class="btn" data-iv="close">Close</button>`;
+          return;
+        }
         $("iv-sheet").innerHTML = `<div class="card-label">Interval timer</div><div class="big">Done!</div>
           <p class="feed-meta" style="margin:.6rem 0 1rem">${intervalTotal(ivCfg) ? mmss(intervalTotal(ivCfg)) + " of work finished. Nice." : ""}</p>
           <button class="btn" data-iv="again">Go again</button>
@@ -5495,11 +5572,14 @@ function ivTick(force) {
   const lab = $("iv-label");
   if (!lab) return;
   const names = { ready: "Get ready", work: "Work", rest: "Rest" };
-  lab.textContent = r.paused ? "Paused" : names[ph.type];
-  $("iv-phase").className = "iv-run iv-" + ph.type;
+  lab.textContent = r.paused ? "Paused" : (ph.name || names[ph.type]);
+  $("iv-phase").className = "iv-run iv-" + ph.type + (r.custom ? " iv-guided" : "");
   $("iv-time").textContent = mmss(r.left || ph.secs);
   const rounds = r.plan.filter(function (p) { return p.type === "work"; }).length;
-  $("iv-round").textContent = ph.type === "ready" ? "Starting soon" : "Round " + ph.round + " of " + rounds;
+  const nextPh = r.plan[r.idx + 1];
+  $("iv-round").textContent = ph.type === "ready" ? "Starting soon"
+    : r.custom ? "Move " + ph.round + " of " + rounds + (nextPh ? " · Next: " + nextPh.name : " · Last one")
+    : "Round " + ph.round + " of " + rounds;
   const doneSecs = r.plan.slice(0, r.idx).reduce(function (n, p) { return n + p.secs; }, 0) + (ph.secs - (r.left || ph.secs));
   $("iv-fill").style.width = Math.min(100, Math.round(doneSecs / r.totalSecs * 100)) + "%";
   $("iv-pause").textContent = r.paused ? "Resume" : "Pause";
@@ -5547,7 +5627,7 @@ $("interval").addEventListener("click", function (e) {
   }
   if (a === "start" || a === "again") { ivStart(); return; }
   if (a === "pause") { ivPauseToggle(); return; }
-  if (a === "stop") { ivStop(); return; }
+  if (a === "stop") { const guided = ivRun && ivRun.custom; ivStop(); if (guided) closeInterval(); return; }
 });
 
 
@@ -5673,6 +5753,314 @@ function renderAchievements() {
 
 
 // =====================================================================
+// TRAINING DAYS, REST DAYS
+// =====================================================================
+const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+function todayIndex() { return (new Date().getDay() + 6) % 7; }   // Monday = 0
+function trainedToday() { return getWorkoutDates().indexOf(dateKey(new Date())) >= 0; }
+
+// Is today a day off? Only if you have picked training days and today is not one of them.
+function isRestDay() {
+  return goals.trainDays.length > 0 && goals.trainDays.indexOf(todayIndex()) < 0;
+}
+// "Today", or the name of your next training day
+function nextSessionLabel() {
+  if (!goals.trainDays.length) return "Today";
+  const t = todayIndex();
+  if (goals.trainDays.indexOf(t) >= 0 && !trainedToday()) return "Today";
+  for (let i = 1; i <= 7; i++) {
+    const d = (t + i) % 7;
+    if (goals.trainDays.indexOf(d) >= 0) return i === 1 ? "Tomorrow" : DAY_NAMES[d];
+  }
+  return "Today";
+}
+
+
+// =====================================================================
+// SORENESS CHECK-IN
+// =====================================================================
+// The muscles you said are sore today (it resets each day)
+function soreToday() {
+  const s = goals.sore;
+  return (s && s.date === dateKey(new Date()) && Array.isArray(s.muscles)) ? s.muscles : [];
+}
+
+function renderSore() {
+  const el = $("sore-row");
+  if (!el) return;
+  const sore = soreToday();
+  const short = { rear: "Rear shoulders", hamstrings: "Hamstrings / glutes" };
+  el.innerHTML = `<details${sore.length ? " open" : ""}><summary class="card-label">Anything sore today?${sore.length ? " (" + sore.length + ")" : ""}</summary><div class="chips" style="margin-top:.5rem">` +
+    MUSCLES.map(function (m) {
+      return `<button class="chip${sore.indexOf(m[0]) >= 0 ? " on" : ""}" data-sore="${m[0]}">${short[m[0]] || m[1]}</button>`;
+    }).join("") + `</div><div class="feed-meta" style="margin-top:.4rem">${sore.length ? "Sore muscles get one exercise at most, with a set less." : "Tap a muscle and today’s plan goes easy on it."}</div></details>`;
+}
+
+$("sore-row").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-sore]");
+  if (!b) return;
+  const list = soreToday().slice();
+  const i = list.indexOf(b.dataset.sore);
+  if (i >= 0) list.splice(i, 1); else list.push(b.dataset.sore);
+  goals.sore = { date: dateKey(new Date()), muscles: list };
+  save("goals", goals);
+  renderSore();
+  refreshPlanAfterGoalChange();
+  $("gen-status").textContent = list.length ? "Got it. Today’s workout goes easy on what’s sore." : "";
+});
+
+
+// =====================================================================
+// LOCKED EXERCISES: stay in a session every week
+// =====================================================================
+function lockedFor(session) { return exPrefs.lock[session] || []; }
+function isLocked(session, name) { return lockedFor(session).indexOf(name) >= 0; }
+function toggleLock(session, name) {
+  const list = lockedFor(session).slice();
+  const i = list.indexOf(name);
+  if (i >= 0) list.splice(i, 1); else list.push(name);
+  if (list.length) exPrefs.lock[session] = list; else delete exPrefs.lock[session];
+  save("exPrefs", exPrefs);
+}
+// Only the split's own sessions can have locks (not routines or custom workouts)
+function canLock() { return !workout.fromRoutine && !!plans[workout.name]; }
+
+
+// =====================================================================
+// WARM-UP AND COOLDOWN ROUTINES (guided by the interval timer)
+// =====================================================================
+const WARM_GENERAL = ["March or jog on the spot", "Arm circles, forward then back", "Hip circles"];
+const WARM_UPPER = ["Shoulder blade squeezes", "Wall slides", "Push-up into downward dog", "Thoracic twists on all fours"];
+const WARM_LOWER = ["Leg swings, front to back", "Glute bridges", "Bodyweight squats", "Walking lunges with a reach"];
+const STRETCHES = {
+  chest: "Doorway chest stretch", back: "Child’s pose", rear: "Thread the needle (both sides)", shoulders: "Cross-body shoulder stretch (both sides)",
+  biceps: "Wall biceps stretch (both sides)", triceps: "Overhead triceps stretch (both sides)", quads: "Standing quad stretch (both sides)",
+  hamstrings: "Seated hamstring stretch", calves: "Wall calf stretch (both sides)", core: "Cobra stretch"
+};
+
+// The muscles in today's workout, in order, no repeats
+function workoutMuscles() {
+  const out = [];
+  workout.exercises.forEach(function (ex) {
+    const l = library.find(function (q) { return q.name === ex.name; });
+    if (l && l.muscle !== "cardio" && out.indexOf(l.muscle) < 0) out.push(l.muscle);
+  });
+  return out;
+}
+
+// kind is "warm" or "cool". Returns { title, secs, moves: [names] }
+function guidedRoutine(kind) {
+  const m = workoutMuscles();
+  const lower = m.some(function (x) { return x === "quads" || x === "hamstrings" || x === "calves"; });
+  const upper = m.some(function (x) { return ["chest", "back", "rear", "shoulders", "biceps", "triceps"].indexOf(x) >= 0; });
+  if (kind === "warm") {
+    let moves = WARM_GENERAL.slice();
+    if (upper && lower) moves = moves.concat(WARM_UPPER.slice(0, 2), WARM_LOWER.slice(0, 2));
+    else if (lower) moves = moves.concat(WARM_LOWER);
+    else moves = moves.concat(WARM_UPPER);
+    return { title: "Warm-up", secs: 40, moves: moves, done: "Warm-up done. Start light on your first lift." };
+  }
+  let moves = m.map(function (x) { return STRETCHES[x]; }).filter(Boolean).slice(0, 6);
+  if (!moves.length) moves = [STRETCHES.back, STRETCHES.hamstrings, STRETCHES.chest];
+  moves.push("Slow breathing: in for 4, out for 6");
+  return { title: "Cooldown", secs: 40, moves: moves, done: "Cooldown done. Good work today." };
+}
+
+function guidedPhases(r) {
+  const phases = [{ type: "ready", secs: 5, round: 0, name: "Get ready: " + r.moves[0] }];
+  r.moves.forEach(function (name, i) { phases.push({ type: "work", secs: r.secs, round: i + 1, name: name }); });
+  return phases;
+}
+
+function openGuided(kind) {
+  const r = guidedRoutine(kind);
+  const total = r.moves.length * r.secs;
+  openSheet(`<div class="card-label">${r.title} · about ${Math.round(total / 60)} min</div><div class="big">${kind === "warm" ? "Get your body ready" : "Wind down"}</div>
+    <p class="feed-meta" style="margin:.5rem 0 .2rem">${kind === "warm" ? "Built for today’s session. Keep it easy: you should feel warm, not tired." : "Stretches for what you trained today. Ease in, never bounce, breathe out as you sink."}</p>
+    <ol class="cue-list">${r.moves.map(function (m) { return `<li>${esc(m)} <span class="feed-meta">· ${r.secs} s</span></li>`; }).join("")}</ol>
+    <button class="btn" data-a="guided-start" data-kind="${kind}">Start guided ${r.title.toLowerCase()}</button>
+    <button class="btn ghost" data-a="hist-close">Close</button>`);
+}
+
+function startGuided(kind) {
+  const r = guidedRoutine(kind);
+  closeSheet();
+  $("interval").classList.add("show");
+  ivStart({ phases: guidedPhases(r), done: r.done, title: r.title });
+}
+
+$("open-warm").addEventListener("click", function () { openGuided("warm"); });
+$("open-cool").addEventListener("click", function () { openGuided("cool"); });
+
+
+// =====================================================================
+// PROTEIN TRACKER (Home)
+// =====================================================================
+let proteinLog = load("protein", {});   // { "2026-11-11": [30, 20, 45] } in grams
+if (!proteinLog || typeof proteinLog !== "object" || Array.isArray(proteinLog)) proteinLog = {};
+
+function proteinOn(date) {
+  const list = Array.isArray(proteinLog[date]) ? proteinLog[date] : [];
+  return list.reduce(function (n, g) { return n + (Number(g) || 0); }, 0);
+}
+// Your target: the one you set, else about 1.8 g per kg of bodyweight, else 120 g
+function proteinTarget() {
+  if (goals.proteinTarget > 0) return goals.proteinTarget;
+  const bw = latestBodyWeight();
+  return bw > 0 ? Math.round(bw * 1.8 / 5) * 5 : 120;
+}
+function addProtein(grams) {
+  grams = Math.round(Number(grams));
+  if (!(grams > 0 && grams <= 300)) return false;
+  const today = dateKey(new Date());
+  if (!Array.isArray(proteinLog[today])) proteinLog[today] = [];
+  proteinLog[today].push(grams);
+  // Keep the last 120 days so this never grows for ever
+  const keys = Object.keys(proteinLog).sort();
+  while (keys.length > 120) delete proteinLog[keys.shift()];
+  save("protein", proteinLog);
+  return true;
+}
+function undoProtein() {
+  const today = dateKey(new Date());
+  if (Array.isArray(proteinLog[today]) && proteinLog[today].length) { proteinLog[today].pop(); save("protein", proteinLog); }
+}
+// How many of the 7 days in a week (0 = this week, 1 = last week) reached the target
+function proteinDaysHit(offset) {
+  const b = weekBounds(offset);
+  const t = proteinTarget();
+  return Object.keys(proteinLog).filter(function (d) { return d >= b.start && d <= b.end && proteinOn(d) >= t; }).length;
+}
+function proteinLogged() { return Object.keys(proteinLog).some(function (d) { return proteinOn(d) > 0; }); }
+
+function renderProtein() {
+  const el = $("protein-card");
+  if (!el) return;
+  const got = proteinOn(dateKey(new Date()));
+  const target = proteinTarget();
+  const pct = Math.min(100, Math.round(got / target * 100));
+  // The last 7 days, today included
+  let hit = 0;
+  for (let i = 0; i < 7; i++) { const d = new Date(); d.setDate(d.getDate() - i); if (proteinOn(dateKey(d)) >= target) hit++; }
+  const openSet = el.querySelector && el.querySelector("details") && el.querySelector("details").open;
+  el.innerHTML = `<div class="up-row now" style="border:0;padding-top:0"><span class="card-label">Protein today</span><b>${got} / ${target} g</b></div>
+    <div class="obj-bar"><i style="width:${pct}%"></i></div>
+    <div class="chips" style="margin-top:.8rem">
+      <button class="chip" data-p="add" data-g="10">+10</button><button class="chip" data-p="add" data-g="20">+20</button>
+      <button class="chip" data-p="add" data-g="30">+30</button><button class="chip" data-p="add" data-g="40">+40</button>
+      ${got > 0 ? `<button class="chip" data-p="undo">Undo</button>` : ""}
+    </div>
+    <div class="feed-meta" style="margin-top:.6rem">${got >= target ? "Target reached today. " : ""}${hit} of the last 7 days on target.</div>
+    <details${openSet ? " open" : ""} style="margin-top:.5rem"><summary class="feed-meta">Other amount, or change target</summary>
+      <div class="btn-row" style="margin-top:.6rem;align-items:center">
+        <input class="set-input" id="p-custom" inputmode="numeric" placeholder="grams" style="flex:1">
+        <button class="btn ghost" data-p="custom" style="flex:1">Add</button>
+      </div>
+      <div class="btn-row" style="margin-top:.5rem;align-items:center">
+        <input class="set-input" id="p-target" inputmode="numeric" placeholder="target (g)" value="${goals.proteinTarget > 0 ? goals.proteinTarget : ""}" style="flex:1">
+        <button class="btn ghost" data-p="target" style="flex:1">Set target</button>
+      </div>
+      <div class="feed-meta" style="margin-top:.5rem">${goals.proteinTarget > 0 ? "Clear the box and tap Set target to go back to the suggested amount." : "Suggested from " + (latestBodyWeight() > 0 ? "your logged bodyweight (about 1.8 g per kg)" : "a typical figure; log your weight in Progress for a personal one") + ". A common guide for building muscle is 1.6 to 2.2 g per kg."}</div>
+    </details>`;
+}
+
+$("protein-card").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-p]");
+  if (!b) return;
+  const a = b.dataset.p;
+  if (a === "add") addProtein(b.dataset.g);
+  if (a === "undo") undoProtein();
+  if (a === "custom") { if (!addProtein($("p-custom").value)) { $("p-custom").focus(); return; } }
+  if (a === "target") {
+    const v = Math.round(Number($("p-target").value));
+    goals.proteinTarget = (v >= 20 && v <= 500) ? v : null;
+    save("goals", goals);
+  }
+  renderProtein();
+});
+
+
+// =====================================================================
+// WEEKLY REVIEW (Progress > Charts)
+// =====================================================================
+let reviewWeek = 0;   // 0 = this week so far, 1 = last week
+
+function weekStats(offset) {
+  const b = weekBounds(offset);
+  const history = getHistory();
+  const out = { workouts: 0, sets: 0, volume: 0, cardio: cardioMinutes(offset), prs: 0 };
+  const days = {};
+  history.forEach(function (w, i) {
+    if (w.date < b.start || w.date > b.end) return;
+    out.workouts++;
+    days[w.date] = true;
+    const t = workoutTotals(w);
+    out.sets += t.sets;
+    out.volume += t.volume;
+    out.prs += findPRs(w.exercises, history.slice(0, i)).length;
+  });
+  out.days = Object.keys(days).length;
+  return out;
+}
+
+// The muscle furthest below its weekly set target
+function behindMuscle(offset) {
+  const counts = muscleCounts(offset).counts;
+  const tg = weeklyTargets();
+  let worst = null;
+  MUSCLES.forEach(function (m) {
+    const low = tg[m[0]][0];
+    const gap = low > 0 ? (low - counts[m[0]]) / low : 0;
+    if (gap > 0 && (!worst || gap > worst.gap)) worst = { key: m[0], label: m[1], sets: counts[m[0]], low: low, gap: gap };
+  });
+  return worst;
+}
+
+function renderReview() {
+  const el = $("review-card");
+  if (!el) return;
+  const now = weekStats(reviewWeek), prev = weekStats(reviewWeek + 1);
+  const goalDays = Math.max(1, Math.min(7, Number(goals.days) || 3));
+  const diff = function (a, b, fmtFn) {
+    if (a === b) return `<span class="rv-d">same</span>`;
+    const up = a > b;
+    return `<span class="rv-d ${up ? "up" : "down"}">${up ? "▲" : "▼"} ${fmtFn(Math.abs(a - b))}</span>`;
+  };
+  const n = function (v) { return Math.round(v).toLocaleString(); };
+  const vol = function (kg) { return n(toDisp(kg)) + " " + unit(); };
+  const row = function (label, value, d) { return `<div class="rv-row"><span>${label}</span><b>${value}</b>${d}</div>`; };
+
+  let html = `<div class="chips" style="margin-bottom:.6rem">
+      <button class="chip${reviewWeek === 0 ? " on" : ""}" data-rv="0">This week</button>
+      <button class="chip${reviewWeek === 1 ? " on" : ""}" data-rv="1">Last week</button></div>`;
+  html += row("Workouts", now.workouts + " <small>/ goal " + goalDays + "</small>", diff(now.workouts, prev.workouts, n));
+  html += row("Sets", n(now.sets), diff(now.sets, prev.sets, n));
+  html += row("Volume", vol(now.volume), diff(now.volume, prev.volume, vol));
+  if (now.cardio || prev.cardio) html += row("Cardio", n(now.cardio) + " min", diff(now.cardio, prev.cardio, function (v) { return n(v) + " min"; }));
+  html += row("Records", String(now.prs), diff(now.prs, prev.prs, n));
+  if (proteinLogged()) html += row("Protein target", proteinDaysHit(reviewWeek) + " <small>/ 7 days</small>", diff(proteinDaysHit(reviewWeek), proteinDaysHit(reviewWeek + 1), n));
+
+  // One plain sentence on how the week went, and what to do next
+  const notes = [];
+  if (!now.workouts) notes.push(reviewWeek === 0 ? "No workouts yet this week." : "No workouts logged that week.");
+  else if (now.days >= goalDays) notes.push("Weekly goal hit.");
+  else if (reviewWeek === 0) notes.push((goalDays - now.days) + " more " + (goalDays - now.days === 1 ? "session" : "sessions") + " to hit your goal.");
+  else notes.push("You trained " + now.days + " of " + goalDays + " planned days.");
+  const b = now.workouts ? behindMuscle(reviewWeek) : null;
+  if (b) notes.push("Furthest behind: " + b.label.toLowerCase() + " (" + b.sets + " of " + b.low + " sets)." + (reviewWeek === 0 ? "" : " Give it some extra this week."));
+  html += `<div class="feed-meta" style="margin-top:.7rem">${esc(notes.join(" "))} Changes are against the week before.</div>`;
+  el.innerHTML = html;
+}
+
+$("review-card").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-rv]");
+  if (!b) return;
+  reviewWeek = Number(b.dataset.rv);
+  renderReview();
+});
+
+
+// =====================================================================
 // START
 // =====================================================================
 // First run of v2.4: mark badges you already have as seen, so you are not flooded with notices
@@ -5691,6 +6079,7 @@ function renderAll() {
   renderTargets();
   renderProgramme();
   renderReadiness();
+  renderSore();
   renderSettings();
   renderGear();
   renderCustom();

@@ -69,7 +69,7 @@
     <div class="card obj-card" id="objectives"></div>
 
     <div class="card hero">
-      <span class="pill">Next workout</span>
+      <span class="pill" id="hero-pill">Next workout</span>
       <div class="hero-body">
         <div class="hero-label" id="hero-label"></div>
         <div class="big hero-title" id="next-workout">Push Day</div>
@@ -79,6 +79,7 @@
     </div>
 
     <div class="card upnext" id="upnext"></div>
+    <div class="card upnext" id="protein-card"></div>
 
     <h2 class="alt-h">Feeling like something different?</h2>
     <div class="alt-tiles" id="alt-tiles">
@@ -134,10 +135,15 @@
     <h1 id="workout-title">Workout</h1>
     <p class="sub" id="workout-progress"></p>
     <div class="ready" id="ready-row"></div>
+    <div class="ready" id="sore-row"></div>
     <button class="btn gen" id="generate-btn">🎲 Generate workout</button>
     <p class="gen-status" id="gen-status"></p>
     <div id="routines-card"></div>
-    <button class="link-btn" id="open-timer" style="margin:0 0 .8rem">⏱ Interval timer (Tabata, EMOM)</button>
+    <div class="quick-row">
+      <button class="chip" id="open-warm">Warm-up</button>
+      <button class="chip" id="open-cool">Cooldown</button>
+      <button class="chip" id="open-timer">⏱ Interval timer</button>
+    </div>
     <div id="workout-list"></div>
   </section>
 
@@ -147,6 +153,9 @@
     <div class="sub-view" data-sub="charts">
     <div class="stats" id="stats"></div>
     <div id="attention"></div>
+
+    <h2>Weekly review</h2>
+    <div class="card" id="review-card"></div>
 
     <h2>This week’s training</h2>
     <div class="card" id="muscle-card"></div>
