@@ -52,13 +52,13 @@
 
   <!-- ===== SCREENS ===== -->
   <section class="screen active" id="home">
-    <div class="home-top" onclick="showTab('gym')">
+    <button type="button" class="home-top" data-action="gym" aria-label="My Gym — set up your equipment">
       <img class="logo-av" src="logo-mark.svg" alt="BTB">
       <div class="home-top-text">
         <div class="home-gym">My Gym</div>
         <div class="feed-meta" id="home-gym-sub"></div>
       </div>
-    </div>
+    </button>
 
     <p class="sub">Welcome back</p>
     <h1>Ready to train?</h1>
@@ -74,12 +74,11 @@
         <div class="hero-label" id="hero-label"></div>
         <div class="big hero-title" id="next-workout">Push Day</div>
         <div class="hero-meta" id="next-meta"></div>
-        <button class="btn" onclick="showTab('workout')">Start</button>
+        <button class="btn" data-action="start-workout">Start</button>
       </div>
     </div>
 
     <div class="card upnext" id="upnext"></div>
-    <div class="card upnext" id="protein-card"></div>
 
     <h2 class="alt-h">Feeling like something different?</h2>
     <div class="alt-tiles" id="alt-tiles">
@@ -106,7 +105,7 @@
     <div class="card" id="backup-nudge" style="display:none">
       <div class="card-label">Back up your data</div>
       <div class="feed-meta" id="backup-nudge-text"></div>
-      <button class="btn" onclick="exportBackup()">Download backup</button>
+      <button class="btn" data-action="export-backup">Download backup</button>
     </div>
 
     <div class="tiles2">
@@ -114,21 +113,18 @@
         <div class="card-label">Streak</div>
         <div class="big" id="streak">0 days</div>
       </div>
-      <div class="card" onclick="showTab('gym')">
+      <button type="button" class="card" data-action="gym" aria-label="Your gym — set up your equipment">
         <div class="card-label">Your gym</div>
         <div class="big" id="home-equip">0 items</div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-label">Badges</div>
-      <div class="badges" id="badges"></div>
+      </button>
     </div>
   </section>
 
   <section class="screen" id="workout">
     <h1 id="workout-title">Workout</h1>
     <p class="sub" id="workout-progress"></p>
+    <button class="chip" id="setup-toggle" type="button" hidden></button>
+    <div id="workout-setup">
     <div class="ready" id="ready-row"></div>
     <div class="ready" id="sore-row"></div>
     <button class="btn gen" id="generate-btn">🎲 Generate workout</button>
@@ -140,6 +136,7 @@
       <button class="chip" id="open-timer">⏱ Interval timer</button>
       <button class="chip" id="open-quick">⚡ 20-min version</button>
       <button class="chip" id="open-calc">Calculator</button>
+    </div>
     </div>
     <button class="btn ghost" id="open-focus" style="margin-bottom:1rem">Focus mode: one set at a time</button>
     <div id="workout-list"></div>
@@ -176,6 +173,9 @@
 
     </div>
     <div class="sub-view" data-sub="body">
+    <h2>Protein</h2>
+    <div class="card upnext" id="protein-card"></div>
+
     <h2>Body</h2>
     <div class="card" id="body-form"></div>
     <div class="card" id="body-chart"></div>
@@ -329,7 +329,7 @@
   <!-- Shown only if the phone refuses to save -->
   <div class="save-warn" id="save-warn" role="alert">
     <div><b>Couldn’t save.</b> This phone’s storage for the app may be full. Go to Me → Settings and download a backup now.</div>
-    <button id="save-warn-x" aria-label="Close" onclick="this.parentNode.classList.remove('show')">✕</button>
+    <button id="save-warn-x" aria-label="Close" data-action="close-save-warn">✕</button>
   </div>
 
   <div class="update-banner" id="update-banner">

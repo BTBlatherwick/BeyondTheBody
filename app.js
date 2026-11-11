@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "2.10.1";
+const APP_VERSION = "2.12.0";
 
 // =====================================================================
 // SMALL HELPERS
@@ -252,6 +252,19 @@ document.addEventListener("click", function (e) {
   if (b) showTab(b.dataset.screen, b.dataset.sub || undefined);
 });
 
+// Tappable areas on the Home screen that used to be plain divs with onclick
+$("home").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-action]");
+  if (!b) return;
+  const a = b.dataset.action;
+  if (a === "gym") { showTab("gym"); return; }
+  if (a === "start-workout") { showTab("workout"); return; }
+  if (a === "export-backup") { exportBackup(); return; }
+});
+$("save-warn").addEventListener("click", function (e) {
+  if (e.target.closest('[data-action="close-save-warn"]')) $("save-warn").classList.remove("show");
+});
+
 
 // =====================================================================
 // EQUIPMENT
@@ -318,9 +331,11 @@ function renderEquipment() {
     const allOn = have === all.length;
 
     const open = !!q || !!eqOpen[category];   // searching opens everything that matches
-    html += `<div class="eq-head${open ? " open" : ""}" data-eq="toggle" data-cat="${esc(category)}">
-      <div class="eq-title"><svg class="eq-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>${esc(category)} <span class="eq-have">${have}/${all.length}</span></div>
-      <button class="eq-all" data-eq="all" data-cat="${esc(category)}">${allOn ? "Clear" : "Select all"}</button>
+    html += `<div class="eq-head${open ? " open" : ""}" data-cat="${esc(category)}">
+      <button type="button" class="eq-title" data-eq="toggle" data-cat="${esc(category)}" aria-expanded="${open}">
+        <svg class="eq-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>${esc(category)} <span class="eq-have">${have}/${all.length}</span>
+      </button>
+      <button type="button" class="eq-all" data-eq="all" data-cat="${esc(category)}">${allOn ? "Clear" : "Select all"}</button>
     </div>`;
 
     if (open) items.forEach(function (name) {
@@ -365,6 +380,7 @@ $("equipment-list").addEventListener("click", function (e) {
   if (!allOn) selected = selected.concat(items);                                // then put it all back in if we're selecting
   save("selectedEquipment", selected);
   renderEquipment();
+  if (b.dataset.cat === "Bars") renderGear();
 });
 $("eq-search").addEventListener("input", function (e) {
   equipQuery = e.target.value;
@@ -379,6 +395,7 @@ function toggleEquipment(name) {
   }
   save("selectedEquipment", selected);
   renderEquipment();
+  if (name === "EZ curl bar" || name === "Trap bar") renderGear();
 }
 
 
@@ -890,59 +907,29 @@ function renderWeek() {
   }
 }
 
-function calcStreak(dates) {
-  const set = new Set(dates);
-  const d = new Date();
-  if (!set.has(dateKey(d))) d.setDate(d.getDate() - 1);
-  let count = 0;
-  while (set.has(dateKey(d))) {
-    count++;
-    d.setDate(d.getDate() - 1);
-  }
+// The streak counts weeks, not days: rest days are part of the plan, so a run of
+// days in a row is the wrong thing to reward. A week counts when you trained on
+// at least your goal number of days. This week counts as soon as you hit it,
+// and does not break the streak while it is still in progress.
+function weekStreak() {
+  const goalDays = Math.max(1, Math.min(7, Number(goals.days) || 3));
+  const perWeek = {};
+  getWorkoutDates().forEach(function (d) {
+    const k = weekStartKey(d);
+    (perWeek[k] = perWeek[k] || {})[d] = true;
+  });
+  const hit = function (offset) {
+    const days = perWeek[weekBounds(offset).start];
+    return !!days && Object.keys(days).length >= goalDays;
+  };
+  let count = hit(0) ? 1 : 0;
+  for (let i = 1; hit(i); i++) count++;
   return count;
 }
-
-function longestStreak(dates) {
-  const sorted = [...new Set(dates)].sort();
-  let best = 0, run = 0, prev = null;
-  sorted.forEach(function (key) {
-    const d = new Date(key + "T00:00:00");
-    if (prev && Math.round((d - prev) / 86400000) === 1) run++;
-    else run = 1;
-    best = Math.max(best, run);
-    prev = d;
-  });
-  return best;
-}
+function streakText(n) { return n + (n === 1 ? " week" : " weeks"); }
 
 function renderStreak() {
-  const n = calcStreak(getWorkoutDates());
-  $("streak").textContent = n + (n === 1 ? " day" : " days");
-}
-
-const badges = [
-  { icon: "🔥", name: "First rep",     desc: "Log 1 workout",    test: function (s) { return s.total >= 1; } },
-  { icon: "💪", name: "Getting going", desc: "Log 5 workouts",   test: function (s) { return s.total >= 5; } },
-  { icon: "🏅", name: "Dedicated",     desc: "Log 20 workouts",  test: function (s) { return s.total >= 20; } },
-  { icon: "⚡", name: "3-day streak",  desc: "3 days in a row",  test: function (s) { return s.longest >= 3; } },
-  { icon: "🚀", name: "7-day streak",  desc: "7 days in a row",  test: function (s) { return s.longest >= 7; } },
-  { icon: "👑", name: "Century",       desc: "Log 100 workouts", test: function (s) { return s.total >= 100; } }
-];
-
-function renderBadges() {
-  const el = $("badges");
-  const dates = getWorkoutDates();
-  const stats = { total: dates.length, longest: longestStreak(dates) };
-
-  el.innerHTML = "";
-  badges.forEach(function (b) {
-    const div = document.createElement("div");
-    div.className = "badge" + (b.test(stats) ? "" : " locked");
-    div.innerHTML = `<div class="b-icon">${b.icon}</div>
-                     <div class="b-name">${b.name}</div>
-                     <div class="b-desc">${b.desc}</div>`;
-    el.appendChild(div);
-  });
+  $("streak").textContent = streakText(weekStreak());
 }
 
 // The segmented bar: one segment per training day in your goal, filled as you complete them
@@ -950,13 +937,13 @@ function renderWeekbar() {
   const goalDays = Math.max(1, Math.min(7, Number(goals.days) || 3));
   const b = weekBounds(0);
   const doneDays = new Set(getWorkoutDates().filter(function (d) { return d >= b.start && d <= b.end; })).size;
-  const n = calcStreak(getWorkoutDates());
+  const n = weekStreak();
 
   let segs = "";
   for (let i = 0; i < goalDays; i++) segs += `<i class="${i < doneDays ? "on" : ""}"></i>`;
   $("weekbar").innerHTML = `<div class="wb-segs">${segs}</div>
     <div class="wb-text"><span>${doneDays} of ${goalDays} completed this week</span>
-    <span>Streak: ${n} ${n === 1 ? "day" : "days"}</span></div>`;
+    <span>Streak: ${streakText(n)}</span></div>`;
 }
 
 // The big "Next workout" card: what's in it and roughly how long it takes
@@ -999,6 +986,7 @@ $("alt-tiles").addEventListener("click", function (e) {
 
   if (a === "routines") {
     showTab("workout");
+    setupOpen = true; syncSetup();
     const r = $("routines-card");
     if (r && r.scrollIntoView) r.scrollIntoView();
     return;
@@ -1044,7 +1032,6 @@ function refreshHome() {
   renderObjectives();
   renderWeek();
   renderStreak();
-  renderBadges();
 }
 
 
@@ -2008,12 +1995,20 @@ $("generate-btn").addEventListener("click", generateWorkout);
 function defaultGear() {
   if (settings.units === "lb") {
     const toKg = function (lb) { return Math.round(lb * KG_PER_LB * 1000) / 1000; };
-    return { bar: toKg(45), plates: [2.5, 5, 10, 25, 45].map(toKg), dumbbells: [] };
+    return { bar: toKg(45), plates: [2.5, 5, 10, 25, 45].map(toKg), dumbbells: [], ezBar: toKg(15), trapBar: toKg(55) };
   }
-  return { bar: 20, plates: [1.25, 2.5, 5, 10, 20], dumbbells: [] };
+  return { bar: 20, plates: [1.25, 2.5, 5, 10, 20], dumbbells: [], ezBar: 7.5, trapBar: 25 };
 }
 
-let gear = load("gear", null) || defaultGear();
+// Fills in ezBar/trapBar on gear saved by an older version that didn't have them yet
+function normGear(g) {
+  const d = defaultGear();
+  if (typeof g.ezBar !== "number" || g.ezBar <= 0) g.ezBar = d.ezBar;
+  if (typeof g.trapBar !== "number" || g.trapBar <= 0) g.trapBar = d.trapBar;
+  return g;
+}
+
+let gear = normGear(load("gear", null) || defaultGear());
 
 // "5, 7.5, 10" typed in your units -> sorted list of kg
 function parseWeightList(text) {
@@ -2030,10 +2025,19 @@ function parseWeightList(text) {
 
 function renderGear() {
   const list = function (arr) { return arr.map(function (kg) { return fmtW(kg); }).join(", "); };
+  const hasEz = selected.indexOf("EZ curl bar") !== -1;
+  const hasTrap = selected.indexOf("Trap bar") !== -1;
   $("gear-card").innerHTML = `
     <div class="goal-group">
-      <div class="card-label">Barbell weight (${unit()})</div>
-      <input class="set-input" id="gear-bar" inputmode="decimal" value="${fmtW(gear.bar)}" style="text-align:left;padding-left:.8rem">
+      <div class="card-label">Bar weights (${unit()})</div>
+      <div class="gear-bar-row">
+        <div><div class="feed-meta">Barbell</div>
+          <input class="set-input" id="gear-bar" inputmode="decimal" value="${fmtW(gear.bar)}" style="text-align:left;padding-left:.8rem"></div>
+        ${hasEz ? `<div><div class="feed-meta">EZ bar</div>
+          <input class="set-input" id="gear-ezbar" inputmode="decimal" value="${fmtW(gear.ezBar)}" style="text-align:left;padding-left:.8rem"></div>` : ""}
+        ${hasTrap ? `<div><div class="feed-meta">Trap bar</div>
+          <input class="set-input" id="gear-trapbar" inputmode="decimal" value="${fmtW(gear.trapBar)}" style="text-align:left;padding-left:.8rem"></div>` : ""}
+      </div>
     </div>
     <div class="goal-group">
       <div class="card-label">Plate sizes you have (${unit()}, one side)</div>
@@ -2052,6 +2056,12 @@ $("gear-card").addEventListener("change", function (e) {
   if (t.id === "gear-bar") {
     const n = parseFloat(t.value);
     if (n > 0) gear.bar = Math.round(fromDisp(n) * 1000) / 1000;
+  } else if (t.id === "gear-ezbar") {
+    const n = parseFloat(t.value);
+    if (n > 0) gear.ezBar = Math.round(fromDisp(n) * 1000) / 1000;
+  } else if (t.id === "gear-trapbar") {
+    const n = parseFloat(t.value);
+    if (n > 0) gear.trapBar = Math.round(fromDisp(n) * 1000) / 1000;
   } else if (t.id === "gear-plates") {
     const plates = parseWeightList(t.value);
     if (plates.length) gear.plates = plates;       // the plate list can't be empty
@@ -2069,8 +2079,9 @@ $("gear-card").addEventListener("click", function (e) {
   if (e.target.closest('[data-a="open-plates"]')) openPlates(60);
 });
 
-// Every total weight you can put on the barbell (up to 8 plates per side)
-function loadableWeights() {
+// Every total weight you can put on a bar (up to 8 plates per side)
+function loadableWeights(barKg) {
+  const bar = barKg != null ? barKg : gear.bar;
   const sides = { 0: true };
   let level = [0];
   for (let count = 0; count < 8; count++) {
@@ -2082,7 +2093,7 @@ function loadableWeights() {
     level.forEach(function (v) { sides[v] = true; });
   }
   return Object.keys(sides)
-    .map(function (s) { return Math.round((gear.bar + 2 * Number(s)) * 1000) / 1000; })
+    .map(function (s) { return Math.round((bar + 2 * Number(s)) * 1000) / 1000; })
     .sort(function (a, b) { return a - b; });
 }
 
@@ -2092,15 +2103,26 @@ function nearest(list, target) {
   }, list[0]);
 }
 
-// Does this exercise load a barbell, or (if you listed dumbbells) dumbbells?
+// Which bar (or dumbbells) this exercise loads
 function gearKind(name) {
   const ex = library.find(function (l) { return l.name === name; });
   if (!ex) return null;
-  if (ex.need.indexOf("Barbell") !== -1) return "barbell";
-  const usesDumbbells = ex.need.some(function (r) { return r.split("|").indexOf("Dumbbells") !== -1; });
-  if (usesDumbbells && selected.indexOf("Dumbbells") !== -1 && gear.dumbbells.length) return "dumbbell";
+  const has = function (eq) { return ex.need.some(function (r) { return r.split("|").indexOf(eq) !== -1; }); };
+  if (has("Trap bar") && selected.indexOf("Trap bar") !== -1) return "trapbar";
+  if (has("EZ curl bar") && selected.indexOf("EZ curl bar") !== -1) return "ezbar";
+  if (has("Barbell")) return "barbell";
+  if (has("Dumbbells") && selected.indexOf("Dumbbells") !== -1 && gear.dumbbells.length) return "dumbbell";
   return null;
 }
+
+// The right bar weight (kg) for a gearKind() result
+function barWeightFor(kind) {
+  if (kind === "ezbar") return gear.ezBar;
+  if (kind === "trapbar") return gear.trapBar;
+  return gear.bar;
+}
+
+const BAR_LABELS = { barbell: "Barbell", ezbar: "EZ bar", trapbar: "Trap bar" };
 
 // Moves a suggested weight onto a weight you can really load.
 // Returns null if nothing applies, {kg} if it snapped, or {kg: null, reason} if you
@@ -2109,21 +2131,22 @@ function snapToGear(name, target, top, wantsMore) {
   const kind = gearKind(name);
   if (!kind) return null;
 
-  const list = kind === "barbell" ? loadableWeights() : gear.dumbbells;
+  const list = kind === "dumbbell" ? gear.dumbbells : loadableWeights(barWeightFor(kind));
   if (!list.length) return null;
 
   const pool = wantsMore ? list.filter(function (w) { return w > top + 0.001; }) : list;
   if (!pool.length) {
-    return { kg: null, reason: kind === "barbell"
-      ? "Nothing heavier fits your plates, so add reps instead"
-      : "You’re at your heaviest dumbbells, so add reps instead" };
+    return { kg: null, reason: kind === "dumbbell"
+      ? "You’re at your heaviest dumbbells, so add reps instead"
+      : "Nothing heavier fits your plates, so add reps instead" };
   }
   return { kg: nearest(pool, target) };
 }
 
-// Which plates go on each side for a total weight (in kg)?
-function platesFor(totalKg) {
-  const perSide = Math.round(((totalKg - gear.bar) / 2) * 1000) / 1000;
+// Which plates go on each side for a total weight (in kg), on a given bar
+function platesFor(totalKg, barKg) {
+  const bar = barKg != null ? barKg : gear.bar;
+  const perSide = Math.round(((totalKg - bar) / 2) * 1000) / 1000;
   if (perSide < 0) return { tooLight: true };
 
   const sizes = gear.plates.slice().sort(function (a, b) { return b - a; });
@@ -2137,12 +2160,15 @@ function platesFor(totalKg) {
   });
 
   const sum = used.reduce(function (a, b) { return a + b; }, 0);
-  return { plates: used, loaded: Math.round((gear.bar + 2 * sum) * 1000) / 1000, exact: rest < 0.005 };
+  return { plates: used, loaded: Math.round((bar + 2 * sum) * 1000) / 1000, exact: rest < 0.005 };
 }
 
-function openPlates(kg) {
+let plateBarKg = gear.bar;   // which bar the open plate calculator sheet is working out
+
+function openPlates(kg, barKg, barLabel) {
+  plateBarKg = barKg != null ? barKg : gear.bar;
   openSheet(`<div class="card-label">Plate calculator</div>
-    <div class="big">Barbell loading</div>
+    <div class="big">${barLabel || "Barbell"} loading</div>
     <div class="card-label" style="margin-top:.9rem">Target weight (${unit()})</div>
     <input type="text" inputmode="decimal" class="inp-date" data-f="plate-target" value="${fmtW(kg)}">
     <div id="plate-result"></div>
@@ -2159,16 +2185,16 @@ function renderPlateResult(targetDisp) {
   }
 
   let target = fromDisp(targetDisp);
-  let r = platesFor(target);
+  let r = platesFor(target, plateBarKg);
   let note = "";
 
   if (r.tooLight) {
-    el.innerHTML = `<p class="feed-meta">That’s lighter than the bar (${fmtW(gear.bar)} ${unit()}).</p>`;
+    el.innerHTML = `<p class="feed-meta">That’s lighter than the bar (${fmtW(plateBarKg)} ${unit()}).</p>`;
     return;
   }
   if (!r.exact) {
-    const alt = nearest(loadableWeights(), target);
-    r = platesFor(alt);
+    const alt = nearest(loadableWeights(plateBarKg), target);
+    r = platesFor(alt, plateBarKg);
     note = `<p class="feed-meta">You can’t make exactly ${fmt(targetDisp)} ${unit()} with your plates. Closest: ${fmtW(r.loaded)} ${unit()}.</p>`;
   }
 
@@ -2180,7 +2206,7 @@ function renderPlateResult(targetDisp) {
   el.innerHTML = `${note}
     <div class="plate-vis"><div class="bar-stub"></div>${vis}<div class="bar-tip"></div></div>
     <div class="pr-line">${r.plates.length ? "Each side: <b>" + r.plates.map(function (p) { return fmtW(p); }).join(" + ") + "</b>" : "Just the bar."}</div>
-    <div class="feed-meta">Bar ${fmtW(gear.bar)} + 2 × ${fmtW((r.loaded - gear.bar) / 2)} = ${fmtW(r.loaded)} ${unit()}</div>`;
+    <div class="feed-meta">Bar ${fmtW(plateBarKg)} + 2 × ${fmtW((r.loaded - plateBarKg) / 2)} = ${fmtW(r.loaded)} ${unit()}</div>`;
 }
 
 
@@ -2388,7 +2414,7 @@ function makeExercise(name, setCount, target) {
     sets.push({ weight: sug ? sug.kg : "", reps: "", done: false });
   }
   const ex = { name: name, target: target, rating: null, note: "", sets: sets };
-  if (settings.warmup === "barbell" && gearKind(name) === "barbell") addWarmups(ex);
+  if (settings.warmup === "barbell" && (gearKind(name) === "barbell" || gearKind(name) === "trapbar")) addWarmups(ex);
   return ex;
 }
 
@@ -2419,7 +2445,25 @@ function rpeOptions(selectedValue) {
   return html;
 }
 
+// Once a set is ticked, the set-up options above the exercises fold away
+let setupOpen = false;
+function workoutStarted() {
+  return workout.exercises.some(function (ex) { return ex.sets.some(function (s) { return s.done; }); });
+}
+function setupFolded() { return workoutStarted() && !setupOpen; }
+function syncSetup() {
+  const started = workoutStarted();
+  if (!started) setupOpen = false;
+  $("workout").classList.toggle("folded", setupFolded());
+  const t = $("setup-toggle");
+  t.hidden = !started;
+  t.textContent = setupOpen ? "Hide options" : "Options: warm-up, timer, swap workout";
+  t.setAttribute("aria-expanded", String(started && setupOpen));
+}
+$("setup-toggle").addEventListener("click", function () { setupOpen = !setupOpen; syncSetup(); });
+
 function renderWorkout() {
+  syncSetup();
   const el = $("workout-list");
   const allStats = exerciseStats();
   let doneCount = 0;
@@ -2441,7 +2485,7 @@ function renderWorkout() {
           <button class="tool" data-action="form" data-ex="${ei}">Form</button>
           ${canLock() && !cardio ? `<button class="tool" data-action="lock" data-ex="${ei}">${isLocked(workout.name, ex.name) ? "Unlock" : "Lock in"}</button>` : ""}
           ${(ex.group != null || workout.exercises[ei + 1]) ? `<button class="tool" data-action="superset" data-ex="${ei}">${ex.group != null ? "Unlink" : "Superset ↓"}</button>` : ""}
-          ${gearKind(ex.name) === "barbell" ? `<button class="tool" data-action="plates" data-ex="${ei}">Plates</button>` : ""}
+          ${["barbell", "ezbar", "trapbar"].indexOf(gearKind(ex.name)) !== -1 ? `<button class="tool" data-action="plates" data-ex="${ei}">Plates</button>` : ""}
           ${canWarm ? `<button class="tool" data-action="warmup" data-ex="${ei}">${hasWarm ? "Clear warm-up" : "Warm-up"}</button>` : ""}
           <button class="tool" data-action="history" data-ex="${ei}">History</button>
           <button class="tool" data-action="swap" data-ex="${ei}">Swap</button>
@@ -2601,8 +2645,10 @@ $("workout-list").addEventListener("click", function (e) {
   }
 
   if (action === "plates") {
+    const kind = gearKind(ex.name);
+    const barKg = barWeightFor(kind);
     const next = ex.sets.find(function (s) { return !s.done && !s.warmup; }) || ex.sets[ex.sets.length - 1];
-    openPlates(parseFloat(next && next.weight) || gear.bar);
+    openPlates(parseFloat(next && next.weight) || barKg, barKg, BAR_LABELS[kind]);
     return;
   }
 
@@ -3213,9 +3259,9 @@ function warmupPlan(name, workingKg) {
     const target = workingKg * r[0];
     let kg = null;
 
-    if (kind === "barbell" || kind === "dumbbell") {
+    if (kind) {
       // Only weights you can really load, and lighter than your working weight
-      const list = (kind === "barbell" ? loadableWeights() : gear.dumbbells)
+      const list = (kind === "dumbbell" ? gear.dumbbells : loadableWeights(barWeightFor(kind)))
         .filter(function (w) { return w < workingKg - 0.001; });
       if (list.length) kg = nearest(list, target);
     } else {
@@ -3684,12 +3730,13 @@ $("body-chart").addEventListener("click", function (e) {
 // =====================================================================
 let muscleWeek = 0;   // 0 = this week, 1 = last week
 
-function weekBounds(offset) {
+// days (optional): only the first so-many days of that week, e.g. 3 = Monday to Wednesday
+function weekBounds(offset, days) {
   const now = new Date();
   const mon = new Date(now);
   mon.setDate(now.getDate() - ((now.getDay() + 6) % 7) - 7 * offset);
   const sun = new Date(mon);
-  sun.setDate(mon.getDate() + 6);
+  sun.setDate(mon.getDate() + (days >= 1 && days <= 7 ? days - 1 : 6));
   return { start: dateKey(mon), end: dateKey(sun) };
 }
 
@@ -4774,8 +4821,8 @@ $("import-file").addEventListener("change", function (e) {
 // =====================================================================
 let weeklyMetric = "sets";
 
-function cardioMinutes(offset) {
-  const b = weekBounds(offset);
+function cardioMinutes(offset, days) {
+  const b = weekBounds(offset, days);
   let m = 0;
   getHistory().forEach(function (w) {
     if (w.date < b.start || w.date > b.end) return;
@@ -5781,6 +5828,7 @@ function renderAchievements() {
 // TRAINING DAYS, REST DAYS
 // =====================================================================
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DAY_FULL = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 function todayIndex() { return (new Date().getDay() + 6) % 7; }   // Monday = 0
 function trainedToday() { return getWorkoutDates().indexOf(dateKey(new Date())) >= 0; }
 
@@ -5951,8 +5999,8 @@ function undoProtein() {
   if (Array.isArray(proteinLog[today]) && proteinLog[today].length) { proteinLog[today].pop(); save("protein", proteinLog); }
 }
 // How many of the 7 days in a week (0 = this week, 1 = last week) reached the target
-function proteinDaysHit(offset) {
-  const b = weekBounds(offset);
+function proteinDaysHit(offset, days) {
+  const b = weekBounds(offset, days);
   const t = proteinTarget();
   return Object.keys(proteinLog).filter(function (d) { return d >= b.start && d <= b.end && proteinOn(d) >= t; }).length;
 }
@@ -6010,10 +6058,10 @@ $("protein-card").addEventListener("click", function (e) {
 // =====================================================================
 let reviewWeek = 0;   // 0 = this week so far, 1 = last week
 
-function weekStats(offset) {
-  const b = weekBounds(offset);
+function weekStats(offset, upTo) {
+  const b = weekBounds(offset, upTo);
   const history = getHistory();
-  const out = { workouts: 0, sets: 0, volume: 0, cardio: cardioMinutes(offset), prs: 0 };
+  const out = { workouts: 0, sets: 0, volume: 0, cardio: cardioMinutes(offset, upTo), prs: 0 };
   const days = {};
   history.forEach(function (w, i) {
     if (w.date < b.start || w.date > b.end) return;
@@ -6044,7 +6092,10 @@ function behindMuscle(offset) {
 function renderReview() {
   const el = $("review-card");
   if (!el) return;
-  const now = weekStats(reviewWeek), prev = weekStats(reviewWeek + 1);
+  // A week still in progress is compared with last week up to the same day,
+  // so Wednesday is not judged against a full seven days.
+  const part = reviewWeek === 0 && todayIndex() < 6 ? todayIndex() + 1 : undefined;
+  const now = weekStats(reviewWeek), prev = weekStats(reviewWeek + 1, part);
   const goalDays = Math.max(1, Math.min(7, Number(goals.days) || 3));
   const diff = function (a, b, fmtFn) {
     if (a === b) return `<span class="rv-d">same</span>`;
@@ -6063,9 +6114,9 @@ function renderReview() {
   html += row("Volume", vol(now.volume), diff(now.volume, prev.volume, vol));
   if (now.cardio || prev.cardio) html += row("Cardio", n(now.cardio) + " min", diff(now.cardio, prev.cardio, function (v) { return n(v) + " min"; }));
   html += row("Records", String(now.prs), diff(now.prs, prev.prs, n));
-  const feelNow = avgFeel(reviewWeek), feelPrev = avgFeel(reviewWeek + 1);
+  const feelNow = avgFeel(reviewWeek), feelPrev = avgFeel(reviewWeek + 1, part);
   if (feelNow !== null) html += row("Session rating", feelNow + " <small>/ 5</small>", feelPrev === null ? `<span class="rv-d"></span>` : diff(feelNow, feelPrev, function (v) { return String(Math.round(v * 10) / 10); }));
-  if (proteinLogged()) html += row("Protein target", proteinDaysHit(reviewWeek) + " <small>/ 7 days</small>", diff(proteinDaysHit(reviewWeek), proteinDaysHit(reviewWeek + 1), n));
+  if (proteinLogged()) html += row("Protein target", proteinDaysHit(reviewWeek) + " <small>/ 7 days</small>", diff(proteinDaysHit(reviewWeek), proteinDaysHit(reviewWeek + 1, part), n));
 
   // One plain sentence on how the week went, and what to do next
   const notes = [];
@@ -6075,7 +6126,7 @@ function renderReview() {
   else notes.push("You trained " + now.days + " of " + goalDays + " planned days.");
   const b = now.workouts ? behindMuscle(reviewWeek) : null;
   if (b) notes.push("Furthest behind: " + b.label.toLowerCase() + " (" + b.sets + " of " + b.low + " sets)." + (reviewWeek === 0 ? "" : " Give it some extra this week."));
-  html += `<div class="feed-meta" style="margin-top:.7rem">${esc(notes.join(" "))} Changes are against the week before.</div>`;
+  html += `<div class="feed-meta" style="margin-top:.7rem">${esc(notes.join(" "))} ${part ? "Changes are against last week up to " + DAY_FULL[todayIndex()] + "." : "Changes are against the week before."}</div>`;
   el.innerHTML = html;
 }
 
@@ -6506,8 +6557,8 @@ function updateLastSession(changes) {
 }
 function stars(n) { n = Math.max(0, Math.min(5, Number(n) || 0)); return "★★★★★".slice(0, n) + "☆☆☆☆☆".slice(0, 5 - n); }
 // Average rating for a week (0 = this week), or null if nothing was rated
-function avgFeel(offset) {
-  const b = weekBounds(offset);
+function avgFeel(offset, days) {
+  const b = weekBounds(offset, days);
   const list = getHistory().filter(function (w) { return w.date >= b.start && w.date <= b.end && w.feel > 0; });
   if (!list.length) return null;
   return Math.round(list.reduce(function (n, w) { return n + w.feel; }, 0) / list.length * 10) / 10;

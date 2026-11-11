@@ -1062,3 +1062,29 @@ select.set-input { width: 100%; }
 .trend-line { font-size: .88rem; line-height: 1.45; margin: 0 0 .9rem; padding: .7rem .8rem; border-radius: 12px; background: rgba(255,255,255,.05); }
 .feed-stars { letter-spacing: .15em; margin-top: .4rem; font-size: .95rem; }
 .rate5 .chip { min-width: 48px; }
+
+/* ===== v2.11.0: tappable areas are real buttons now, same look as before =====
+   .card already sets its own background/border/padding via the rules above,
+   which apply just the same to a <button> as to a <div> — the .tiles2 > .card
+   button only needs the few things a real button needs that .card doesn't
+   cover. .home-top was never a .card, so it needs its own background/border
+   reset too (a plain <button> defaults to the browser's own grey button look). */
+button.home-top { background: none; border: 0; margin: 0; padding: 0; }
+button.home-top, .tiles2 > button.card { width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+button.eq-title { background: none; border: 0; margin: 0; padding: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; width: auto; }
+/* v2.11.1: the whole row is tappable again, not just the words */
+button.eq-title { flex: 1; min-height: 44px; font-weight: 600; font-size: 1.05rem; }
+
+/* ===== v2.11.0: your own bar weights (barbell is above; EZ and trap bars add their own) ===== */
+.gear-bar-row { display: flex; gap: .6rem; }
+.gear-bar-row > div { flex: 1; min-width: 0; }
+
+/* ===== v2.12.0: Train tab folds its options once you start; small-phone fixes ===== */
+#workout.folded #workout-setup { display: none; }
+#setup-toggle { display: block; width: 100%; margin: 0 0 .8rem; min-height: 44px; }
+#setup-toggle[hidden] { display: none; }
+.wb-text { flex-wrap: wrap; gap: .15rem .9rem; }
+@media (max-width: 360px) {
+  .subnav { gap: .3rem; }
+  .subtab { padding-left: .62rem; padding-right: .62rem; font-size: .78rem; }
+}
