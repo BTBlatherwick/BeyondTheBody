@@ -1007,7 +1007,3 @@ select.set-input { width: 100%; }
 @keyframes splash-ember { 0% { opacity: 0; transform: scale(.7); } 45% { opacity: 1; } 100% { opacity: .75; transform: scale(1.08); } }
 @keyframes splash-text { from { opacity: 0; letter-spacing: .9em; } to { opacity: .9; letter-spacing: .6em; } }
 [data-splash="short"] .splash-glow, [data-splash="short"] .splash-logo, [data-splash="short"] .splash-name { animation-duration: .45s; animation-delay: 0s; }
-@media (prefers-reduced-motion: reduce) {
-  .splash-glow, .splash-logo, .splash-name { animation: none; opacity: 1; transform: none; filter: none; }
-  .splash-glow { opacity: .6; }
-}

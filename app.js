@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "2.5.0";
+const APP_VERSION = "2.5.1";
 
 // =====================================================================
 // SMALL HELPERS
