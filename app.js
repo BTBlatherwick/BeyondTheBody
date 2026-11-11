@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "2.7.0";
+const APP_VERSION = "2.8.0";
 
 // =====================================================================
 // SMALL HELPERS
@@ -440,6 +440,8 @@ function normGoals(g) {
   if (g.autoRest === undefined) g.autoRest = true;
   if (!g.programme || typeof g.programme !== "object" || !g.programme.start) g.programme = null;
   if (!g.readiness || typeof g.readiness !== "object") g.readiness = null;
+  if (["auto", "full", "ul", "ppl", "arnold", "part"].indexOf(g.split) < 0) g.split = "auto";
+  g.splitOffset = Math.max(0, parseInt(g.splitOffset) || 0);   // sessions you chose to skip past
   return g;
 }
 
@@ -567,6 +569,12 @@ function renderGoals() {
     html += `</div>`;
     if (key === "goal") html += `<div class="feed-meta goal-blurb">${esc(goalProfile().blurb)}</div>`;
     html += `</div>`;
+    if (key === "days") {
+      html += `<div class="goal-group"><div class="card-label">Split</div><div class="chips">` +
+        Object.keys(SPLITS).map(function (k) {
+          return `<button class="chip${goals.split === k ? " on" : ""}" data-key="split" data-value="${k}">${SPLITS[k].label}</button>`;
+        }).join("") + `</div><div class="feed-meta goal-blurb">${esc(splitNote())}</div></div>`;
+    }
   }
 
   html += `<div class="goal-group"><div class="card-label">Focus muscles (up to 3)</div><div class="chips">`;
@@ -610,6 +618,12 @@ $("goals-card").addEventListener("click", function (e) {
   if (!btn) return;
   if (btn.dataset.key === "autoRest") goals.autoRest = btn.dataset.value === "1";
   else goals[btn.dataset.key] = btn.dataset.value;
+  if (btn.dataset.key === "split") {
+    // Start the new split from its first session
+    const len = getSplit().length;
+    const finished = getHistory().filter(function (w) { return !w.routine; }).length;
+    goals.splitOffset = (len - finished % len) % len;
+  }
   save("goals", goals);
   renderGoals();
   refreshPlanAfterGoalChange();
@@ -954,6 +968,21 @@ function renderHero() {
   $("home-gym-sub").textContent = selected.length + (selected.length === 1 ? " item of equipment" : " items of equipment");
 }
 
+$("upnext").addEventListener("click", function (e) {
+  if (!e.target.closest("#skip-session")) return;
+  const s = upcomingSessions(1);
+  if (workout.fromRoutine || workout.name !== s[0]) {
+    // A routine or custom workout is loaded: go back to the split's session
+    const started = workout.exercises.some(function (ex) { return ex.sets.some(function (x) { return x.done; }); });
+    if (started && !confirm("Replace your current workout? Ticked sets will be lost.")) return;
+    const plan = buildPlan();
+    if (plan) { workout = newWorkout(plan); saveWorkout(); }
+    renderAll();
+    return;
+  }
+  skipSession();
+});
+
 $("alt-tiles").addEventListener("click", function (e) {
   const b = e.target.closest("[data-home]");
   if (!b) return;
@@ -981,7 +1010,21 @@ $("alt-tiles").addEventListener("click", function (e) {
   }
 });
 
+// "Up next" on Home: today's session and the two after it
+function renderUpNext() {
+  const el = $("upnext");
+  if (!el) return;
+  const s = upcomingSessions(3);
+  const own = workout.fromRoutine || workout.name !== s[0];   // a routine or custom workout is loaded instead
+  const row = function (label, name, now) { return `<div class="up-row${now ? " now" : ""}"><span>${label}</span><b>${esc(name)}</b></div>`; };
+  el.innerHTML = `<div class="card-label">Up next · ${esc(goals.split === "auto" ? autoSplitLabel() : SPLITS[goals.split].label)}</div>` +
+    (own ? row("Now", workout.name, true) + row("Then", s[0]) + row("After", s[1])
+         : row("Today", s[0], true) + row("Next", s[1]) + row("Then", s[2])) +
+    `<button class="btn ghost" id="skip-session">${own ? "Back to my split" : "Skip to next session"}</button>`;
+}
+
 function refreshHome() {
+  renderUpNext();
   renderWeekbar();
   renderObjectives();
   renderWeek();
@@ -1499,9 +1542,39 @@ const plans = {
                   ["biceps","any"],["triceps","any"],["shoulders","any"],["core","any"]]
 };
 plans["Lower Body"] = plans["Leg Day"];
+// Sessions used by the Arnold and Body part splits
+plans["Chest & Back"]     = [["chest","compound"],["back","compound"],["chest","any"],["back","any"],
+                             ["chest","iso"],["back","any"],["rear","any"],["core","any"]];
+plans["Shoulders & Arms"] = [["shoulders","compound"],["biceps","any"],["triceps","compound"],["shoulders","iso"],
+                             ["biceps","any"],["triceps","iso"],["rear","any"],["core","any"]];
+plans["Chest Day"]        = [["chest","compound"],["chest","compound"],["chest","any"],["chest","iso"],
+                             ["triceps","any"],["chest","any"],["core","any"],["triceps","iso"]];
+plans["Back Day"]         = [["back","compound"],["back","compound"],["back","any"],["rear","any"],
+                             ["back","any"],["biceps","any"],["rear","any"],["core","any"]];
+plans["Shoulder Day"]     = [["shoulders","compound"],["shoulders","compound"],["shoulders","iso"],["rear","any"],
+                             ["shoulders","any"],["rear","any"],["core","any"],["calves","any"]];
+plans["Arm Day"]          = [["biceps","any"],["triceps","compound"],["biceps","any"],["triceps","iso"],
+                             ["biceps","any"],["triceps","any"],["core","any"],["core","any"]];
+
+// The splits you can choose in Me > Goals. "auto" lets the app decide.
+const SPLITS = {
+  auto:   { label: "Auto",               sessions: null },
+  full:   { label: "Full body",          sessions: ["Full Body A", "Full Body B", "Full Body C"] },
+  ul:     { label: "Upper / Lower",      sessions: ["Upper Body", "Lower Body"] },
+  ppl:    { label: "Push / Pull / Legs", sessions: ["Push Day", "Pull Day", "Leg Day"] },
+  arnold: { label: "Arnold",             sessions: ["Chest & Back", "Shoulders & Arms", "Leg Day"] },
+  part:   { label: "Body part",          sessions: ["Chest Day", "Back Day", "Shoulder Day", "Arm Day", "Leg Day"] }
+};
 
 // Which sessions make up your week, based on days per week, goal and experience
 function getSplit() {
+  const chosen = SPLITS[goals.split];
+  if (chosen && chosen.sessions) return chosen.sessions;
+  return autoSplit();
+}
+
+// What the app picks when the split is left on Auto
+function autoSplit() {
   const d = goals.days;
   const fullBodyGoal = (goals.goal === "Lose fat" || goals.goal === "Conditioning" || goals.goal === "General fitness");
   if (d === "2") return ["Full Body A", "Full Body B"];
@@ -1516,6 +1589,76 @@ function getSplit() {
   }
   if (d === "5") return ["Push Day", "Pull Day", "Leg Day", "Upper Body", "Lower Body"];
   return ["Push Day", "Pull Day", "Leg Day", "Push Day", "Pull Day", "Leg Day"];
+}
+
+
+// A plain name for whatever Auto would pick, e.g. "Upper / Lower"
+function autoSplitLabel() {
+  const s = autoSplit();
+  if (s[0].indexOf("Full Body") === 0) return "Full body";
+  if (s[0] === "Upper Body") return "Upper / Lower";
+  return s.length === 5 ? "Push / Pull / Legs plus Upper / Lower" : "Push / Pull / Legs";
+}
+
+// How many times a week a split trains its least-trained main muscle
+function splitFrequency(sessions, days) {
+  const main = ["chest", "back", "shoulders", "quads", "hamstrings"];
+  let least = Infinity;
+  main.forEach(function (m) {
+    const n = sessions.filter(function (name) { return plans[name].some(function (s) { return s[0] === m; }); }).length;
+    least = Math.min(least, n / sessions.length * days);
+  });
+  return Math.round(least * 10) / 10;
+}
+
+// The line under the Split chips: what it means for you, and a nudge if it is a poor fit
+function splitNote() {
+  const days = Number(goals.days) || 3;
+  if (goals.split === "auto") return "The app picks for you: " + autoSplitLabel() + " for " + days + " days a week.";
+  const f = splitFrequency(getSplit(), days);
+  const times = f === 1 ? "about once" : f === 2 ? "about twice" : "about " + f + " times";
+  let text = "On " + days + " days a week this trains each muscle " + times + " a week.";
+  if (f < 1.5) text += " Twice a week suits most goals better. Auto would use " + autoSplitLabel() + ".";
+  return text;
+}
+
+// The next few sessions in your split, starting with today's
+function upcomingSessions(n) {
+  const split = getSplit();
+  const finished = getHistory().filter(function (w) { return !w.routine; }).length;
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(split[(finished + goals.splitOffset + i) % split.length]);
+  return out;
+}
+
+// Move on to the next session in the split without doing this one
+function skipSession() {
+  const started = workout.exercises.some(function (ex) { return ex.sets.some(function (s) { return s.done; }); });
+  if (started && !confirm("Skip this session? Ticked sets will be lost.")) return;
+  goals.splitOffset = (goals.splitOffset + 1) % getSplit().length;
+  save("goals", goals);
+  const plan = buildPlan();
+  if (plan) { workout = newWorkout(plan); saveWorkout(); }
+  renderAll();
+}
+
+
+// ----- Exercises you love, and ones you never want to see -----
+let exPrefs = load("exPrefs", null);
+if (!exPrefs || !Array.isArray(exPrefs.fav) || !Array.isArray(exPrefs.ban)) exPrefs = { fav: [], ban: [] };
+function isFav(name) { return exPrefs.fav.indexOf(name) >= 0; }
+function isBanned(name) { return exPrefs.ban.indexOf(name) >= 0; }
+// kind is "fav" or "ban". An exercise can't be both, so setting one clears the other.
+function togglePref(kind, name) {
+  const other = kind === "fav" ? "ban" : "fav";
+  const i = exPrefs[kind].indexOf(name);
+  if (i >= 0) exPrefs[kind].splice(i, 1);
+  else {
+    exPrefs[kind].push(name);
+    const j = exPrefs[other].indexOf(name);
+    if (j >= 0) exPrefs[other].splice(j, 1);
+  }
+  save("exPrefs", exPrefs);
 }
 
 
@@ -1552,7 +1695,7 @@ function isStalled(name) {
 function pickExercise(muscle, kind, used, prefer) {
   // 1. Everything for this muscle that you can do, haven't used yet, and aren't avoiding
   let pool = library.filter(function (ex) {
-    return ex.muscle === muscle && !used.includes(ex.name) && hasEquipment(ex) && !isAvoided(ex);
+    return ex.muscle === muscle && !used.includes(ex.name) && hasEquipment(ex) && !isAvoided(ex) && !isBanned(ex.name);
   });
 
   // 2. Narrow to the wanted type (if none exist, keep the wider pool)
@@ -1566,6 +1709,10 @@ function pickExercise(muscle, kind, used, prefer) {
   // 4. Move away from exercises you've stopped progressing on
   const moving = pool.filter(function (ex) { return !isStalled(ex.name); });
   if (moving.length) pool = moving;
+
+  // 4b. Your favourites come first
+  const favs = pool.filter(function (ex) { return isFav(ex.name); });
+  if (favs.length) pool = favs;
 
   // 5. Stick with last time's exercise if it still fits
   if (prefer && prefer.length) {
@@ -1639,7 +1786,7 @@ function buildPlan(opts) {
   opts = opts || {};
   const split = getSplit();
   const finished = getHistory().filter(function (w) { return !w.routine; }).length;   // your own routines don't advance the split
-  const sessionIndex = finished % split.length;
+  const sessionIndex = (finished + goals.splitOffset) % split.length;
   const planName = split[sessionIndex];
   const why = [];
 
@@ -2238,6 +2385,8 @@ function renderWorkout() {
           <button class="tool" data-action="history" data-ex="${ei}">History</button>
           <button class="tool" data-action="swap" data-ex="${ei}">Swap</button>
           <button class="tool" data-action="skip" data-ex="${ei}">Skip</button>
+          ${ei > 0 ? `<button class="tool" data-action="up" data-ex="${ei}" aria-label="Move ${esc(ex.name)} up">↑ Up</button>` : ""}
+          ${ei < workout.exercises.length - 1 ? `<button class="tool" data-action="down" data-ex="${ei}" aria-label="Move ${esc(ex.name)} down">↓ Down</button>` : ""}
         </div>
         <button class="more" data-action="menu" data-ex="${ei}" aria-label="More options for ${esc(ex.name)}">•••</button>
       </div>
@@ -2409,6 +2558,15 @@ $("workout-list").addEventListener("click", function (e) {
   if (action === "superset") toggleSuperset(ei);
 
   if (action === "swap") swapExercise(ei);
+
+  // Move an exercise up or down the list
+  if (action === "up" || action === "down") {
+    const to = ei + (action === "up" ? -1 : 1);
+    if (to >= 0 && to < workout.exercises.length) {
+      const moved = workout.exercises.splice(ei, 1)[0];
+      workout.exercises.splice(to, 0, moved);
+    }
+  }
 
   if (action === "skip") {
     if (!confirm("Remove " + ex.name + " from today’s workout?")) return;
@@ -2618,6 +2776,12 @@ $("sheet").addEventListener("click", function (e) {
   if (a === "hist-close") closeSheet();
   if (a === "add-close") closeSheet();
   if (a === "lib-hist") openExerciseHistory(b.dataset.name);
+  if (a === "pref") {
+    togglePref(b.dataset.kind, b.dataset.name);
+    openLibraryDetail(b.dataset.name);
+    renderLibraryList();
+    refreshPlanAfterGoalChange();   // an unstarted workout is rebuilt so the change shows straight away
+  }
   if (a === "add-ex") {
     const lib = library.find(function (l) { return l.name === b.dataset.name; });
     if (!lib) return;
@@ -4321,7 +4485,7 @@ if (pinIsSet()) lockApp();   // locked from the very first moment
 // BACKUP AND RESTORE
 // Your data lives in this browser only. A backup is a .json file you can keep safe.
 // =====================================================================
-const BACKUP_KEYS = ["settings", "restMap", "selectedEquipment", "goals", "workoutDates", "workoutHistory", "currentWorkout", "gear", "customExercises", "routines", "deload", "bodyLog"];
+const BACKUP_KEYS = ["settings", "restMap", "selectedEquipment", "goals", "workoutDates", "workoutHistory", "currentWorkout", "gear", "customExercises", "routines", "deload", "bodyLog", "exPrefs"];
 
 function buildBackup() {
   const data = {};
@@ -4623,7 +4787,9 @@ function renderLibraryList() {
   $("lib-list").innerHTML = shown.map(function (l) {
     const n = sessionsOf(l.name).length;
     let tag = n ? n + (n === 1 ? " session" : " sessions") : "";
-    if (isAvoided(l)) tag = "Avoided";
+    if (isFav(l.name)) tag = "★ " + (tag || "Favourite");
+    if (isBanned(l.name)) tag = "Never show";
+    else if (isAvoided(l)) tag = "Avoided";
     else if (!hasEquipment(l)) tag = "Needs gear";
     return `<button class="lib-row" data-lib="open" data-name="${esc(l.name)}">
       <span><b>${esc(l.name)}</b><span class="feed-meta">${esc(muscleLabel(l.muscle))}${l.type === "compound" ? " · compound" : ""}</span></span>
@@ -4681,6 +4847,11 @@ function openLibraryDetail(name) {
     if (pts.length > 1) html += `<div class="feed-meta" style="margin-top:.8rem">${cardio ? "Minutes per session" : "Estimated 1RM (" + unit() + ")"}</div>` + lineChartSvg(pts);
   }
 
+  html += `<div class="chips" style="margin-top:.9rem">
+      <button class="chip${isFav(name) ? " on" : ""}" data-a="pref" data-kind="fav" data-name="${esc(name)}">${isFav(name) ? "★ Favourite" : "☆ Favourite"}</button>
+      <button class="chip${isBanned(name) ? " on" : ""}" data-a="pref" data-kind="ban" data-name="${esc(name)}">${isBanned(name) ? "Never show: on" : "Never show"}</button>
+    </div>
+    <div class="feed-meta" style="margin-top:.4rem">${isFav(name) ? "The planner picks this first when it fits the session." : isBanned(name) ? "The planner and Swap will never pick this. You can still add it yourself." : "Favourites get picked first. “Never show” keeps it out of your plans."}</div>`;
   html += cueHtml(name);
   html += `<div class="btn-row" style="margin-top:.8rem">
       <button class="btn ghost" data-a="lib-hist" data-name="${esc(name)}">All sessions</button>

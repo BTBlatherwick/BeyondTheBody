@@ -994,3 +994,11 @@ select.set-input { width: 100%; }
   gap: .6rem; align-items: flex-start; }
 .save-warn.show { display: flex; }
 .save-warn button { background: none; border: 0; color: #fff; font-size: 1rem; min-width: 40px; min-height: 40px; cursor: pointer; }
+
+
+/* ===== v2.8: up next, favourites ===== */
+.upnext { margin-top: 1rem; }
+.up-row { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; padding: .55rem 0; border-bottom: 1px solid rgba(255,255,255,.07); color: var(--muted); font-size: .9rem; }
+.up-row b { font-weight: 500; color: var(--muted); text-align: right; }
+.up-row.now, .up-row.now b { color: var(--text); font-weight: 600; }
+.upnext .btn { margin-top: .9rem; }
