@@ -121,11 +121,6 @@
     </div>
 
     <div class="card">
-      <div class="card-label">Last 12 weeks</div>
-      <div class="heatmap" id="heatmap"></div>
-    </div>
-
-    <div class="card">
       <div class="card-label">Badges</div>
       <div class="badges" id="badges"></div>
     </div>
@@ -143,7 +138,10 @@
       <button class="chip" id="open-warm">Warm-up</button>
       <button class="chip" id="open-cool">Cooldown</button>
       <button class="chip" id="open-timer">⏱ Interval timer</button>
+      <button class="chip" id="open-quick">⚡ 20-min version</button>
+      <button class="chip" id="open-calc">Calculator</button>
     </div>
+    <button class="btn ghost" id="open-focus" style="margin-bottom:1rem">Focus mode: one set at a time</button>
     <div id="workout-list"></div>
   </section>
 
@@ -156,6 +154,9 @@
 
     <h2>Weekly review</h2>
     <div class="card" id="review-card"></div>
+
+    <h2>Strength levels</h2>
+    <div class="card" id="levels-card"></div>
 
     <h2>This week’s training</h2>
     <div class="card" id="muscle-card"></div>
@@ -193,6 +194,7 @@
   <section class="screen" id="feed">
     <h1>History</h1>
     <p class="sub">Every workout you’ve logged.</p>
+    <div class="card" id="cal-card"></div>
     <div id="feed-list"></div>
   </section>
 
@@ -239,6 +241,7 @@
         <button class="btn ghost" id="import-btn">Restore backup</button>
       </div>
       <input type="file" id="import-file" accept=".json,application/json" hidden>
+      <button class="btn ghost" id="csv-btn" style="margin-top:.6rem">Export history as a spreadsheet (CSV)</button>
     </div>
 
     <h2>About</h2>
@@ -276,6 +279,9 @@
       <button id="rest-skip">Skip</button>
     </div>
   </div>
+
+  <!-- ===== FOCUS MODE ===== -->
+  <div class="focus" id="focus"><div class="focus-body" id="focus-body"></div></div>
 
   <!-- ===== INTERVAL TIMER ===== -->
   <div class="overlay iv" id="interval"><div class="sheet" id="iv-sheet"></div></div>
