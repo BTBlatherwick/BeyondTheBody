@@ -9,7 +9,18 @@
     // Set the theme before the page draws, so there's no flash of the wrong look
     try {
       var s = JSON.parse(localStorage.getItem("settings"));
-      document.documentElement.setAttribute("data-theme", (s && s.themeV === 2 && s.theme) || "clean");
+      document.documentElement.setAttribute("data-theme", "clean");
+      // Your accent colour, applied before the page draws
+      var m = s && /^#([0-9a-f]{6})$/i.exec(s.accent || "");
+      if (m) {
+        var n = parseInt(m[1], 16), rgb = [n >> 16 & 255, n >> 8 & 255, n & 255];
+        var lum = function (c) { var f = function (v) { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }; return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]); };
+        for (var g = 0; lum(rgb) < 0.1 && g < 10; g++) rgb = rgb.map(function (v) { return Math.round(v + (255 - v) * 0.25); });
+        var st = document.documentElement.style;
+        st.setProperty("--accent", "rgb(" + rgb.join(",") + ")");
+        st.setProperty("--on-accent", lum(rgb) > 0.4 ? "#0b0b0c" : "#ffffff");
+        st.setProperty("--pill", "rgba(" + rgb.join(",") + ",0.32)");
+      }
       // A PIN is set: cover the app straight away, before anything else shows
       if (localStorage.getItem("pin")) document.documentElement.setAttribute("data-locked", "1");
     } catch (e) { document.documentElement.setAttribute("data-theme", "clean"); }

@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "2.5.1";
+const APP_VERSION = "2.6.0";
 
 // =====================================================================
 // SMALL HELPERS
@@ -45,18 +45,53 @@ const REST_OPTIONS = [45, 60, 90, 120, 180, 240];
 
 let settings = load("settings", { units: "kg", rest: 90 });
 if (!settings.warmup) settings.warmup = "off";
-// Everyone moves to the new Clean look once. After that, whatever you pick is remembered.
-if (settings.themeV !== 2) {
-  settings.theme = "clean";
-  settings.themeV = 2;
-  save("settings", settings);
+// One look (Clean), plus an accent colour you choose.
+settings.theme = "clean";
+settings.themeV = 2;
+
+const ACCENTS = [
+  ["", "White"], ["#c0392b", "Blood red"], ["#e8702a", "Ember"], ["#e0a91b", "Gold"], ["#34c26b", "Green"],
+  ["#1fb6a6", "Teal"], ["#3b82f6", "Blue"], ["#8b5cf6", "Purple"], ["#ec4899", "Pink"]
+];
+
+// "#3b82f6" -> [59, 130, 246]; anything that is not a colour -> null
+function hexRgb(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ""));
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [n >> 16 & 255, n >> 8 & 255, n & 255];
+}
+// How bright a colour looks, from 0 (black) to 1 (white)
+function luminance(rgb) {
+  const f = function (v) { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+  return 0.2126 * f(rgb[0]) + 0.7152 * f(rgb[1]) + 0.0722 * f(rgb[2]);
+}
+// Works out the three colours the app needs from the one you pick
+function accentColours(hex) {
+  let rgb = hexRgb(hex);
+  if (!rgb) return null;
+  // Too dark to see on a black background? Lift it toward white.
+  let guard = 0;
+  while (luminance(rgb) < 0.1 && guard++ < 10) rgb = rgb.map(function (v) { return Math.round(v + (255 - v) * 0.25); });
+  return {
+    accent: "rgb(" + rgb.join(",") + ")",
+    on: luminance(rgb) > 0.4 ? "#0b0b0c" : "#ffffff",   // text that sits on top of the accent
+    pill: "rgba(" + rgb.join(",") + ",0.32)"
+  };
 }
 
-// The look of the app: "grit" (stark, concrete, no glass) or "classic" (the glassy one)
 function applyTheme() {
-  document.documentElement.setAttribute("data-theme", settings.theme);
+  const root = document.documentElement;
+  root.setAttribute("data-theme", "clean");
+  const col = accentColours(settings.accent);
+  ["--accent", "--on-accent", "--pill"].forEach(function (v) { root.style.removeProperty(v); });
+  if (col) {
+    root.style.setProperty("--accent", col.accent);
+    root.style.setProperty("--on-accent", col.on);
+    root.style.setProperty("--pill", col.pill);
+  }
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute("content", { clean: "#000000", grit: "#070707", classic: "#0d0d10" }[settings.theme] || "#000000");
+  if (meta) meta.setAttribute("content", "#000000");
 }
 applyTheme();
 let restMap = load("restMap", {});   // per-exercise rest times, e.g. { "Deadlift": 180 }
@@ -78,11 +113,35 @@ function renderSettings() {
     return h + "</div></div>";
   }
   $("settings-card").innerHTML =
-    group("Theme", "theme", [["clean", "Clean"], ["grit", "Grit"], ["classic", "Classic"]]) +
+    '<div class="goal-group"><div class="card-label">Accent colour</div><div class="swatches">' +
+    ACCENTS.map(function (c) {
+      const on = (settings.accent || "") === c[0];
+      return '<button class="swatch' + (on ? " on" : "") + '" data-accent="' + c[0] + '" style="background:' + (c[0] || "#f2f2f4") + '" aria-label="' + c[1] + '" title="' + c[1] + '"></button>';
+    }).join("") +
+    '<label class="swatch-custom' + (settings.accent && !ACCENTS.some(function (c) { return c[0] === settings.accent; }) ? " on" : "") + '" aria-label="Pick your own colour" title="Pick your own">' +
+    '<input type="color" id="accent-custom" value="' + (hexRgb(settings.accent) ? settings.accent : "#c0392b") + '"></label>' +
+    '</div></div>' +
     group("Units", "units", [["kg", "kg"], ["lb", "lb"]]) +
     group("Default rest time", "rest", [[60, "1:00"], [90, "1:30"], [120, "2:00"], [180, "3:00"]]) +
     group("Auto warm-up sets", "warmup", [["off", "Off"], ["barbell", "Barbell lifts"]]);
 }
+
+function setAccent(hex) {
+  settings.accent = hexRgb(hex) ? hex.toLowerCase() : "";
+  save("settings", settings);
+  applyTheme();
+}
+$("settings-card").addEventListener("click", function (e) {
+  const sw = e.target.closest("[data-accent]");
+  if (sw) { setAccent(sw.dataset.accent); renderSettings(); return; }
+});
+// The colour wheel: update live while you drag, redraw the row when you let go
+$("settings-card").addEventListener("input", function (e) {
+  if (e.target.id === "accent-custom") setAccent(e.target.value);
+});
+$("settings-card").addEventListener("change", function (e) {
+  if (e.target.id === "accent-custom") renderSettings();
+});
 
 $("settings-card").addEventListener("click", function (e) {
   const btn = e.target.closest("[data-skey]");
