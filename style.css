@@ -1217,3 +1217,6 @@ button.coach-row { display: flex; align-items: center; gap: .9rem; width: 100%; 
 .ai-msg.me { align-self: flex-end; background: var(--accent); color: var(--on-accent, #000); }
 .ai-msg.it { align-self: flex-start; background: rgba(255,255,255,.07); }
 #ai-q { width: 100%; text-align: left; resize: vertical; min-height: 3.2rem; padding: .7rem .8rem; }
+
+/* ===== v2.20.1 ===== */
+.btn.danger { color: #e86a5c; border-color: rgba(232,106,92,.45); }

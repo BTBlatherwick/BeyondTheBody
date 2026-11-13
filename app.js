@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "2.20.0";
+const APP_VERSION = "2.21.0";
 
 // =====================================================================
 // SMALL HELPERS
@@ -3785,7 +3785,7 @@ function deleteBodyEntry(date) {
 }
 
 // A simple line chart as an SVG. points = [{ date, v }] in the units you see.
-function lineChartSvg(points) {
+function lineChartSvg(points, fmtY) {
   const W = 320, H = 170, padL = 38, padR = 12, padT = 12, padB = 26;
   let min = Math.min.apply(null, points.map(function (p) { return p.v; }));
   let max = Math.max.apply(null, points.map(function (p) { return p.v; }));
@@ -3810,7 +3810,7 @@ function lineChartSvg(points) {
     const v = min + (max - min) * f;
     const y = py(v);
     svg += `<line class="ch-grid" x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}"/>
-            <text class="ch-txt" x="${padL - 6}" y="${y + 3}" text-anchor="end">${fine ? round1(v) : Math.round(v)}</text>`;
+            <text class="ch-txt" x="${padL - 6}" y="${y + 3}" text-anchor="end">${fmtY ? fmtY(v) : fine ? round1(v) : Math.round(v)}</text>`;
   });
 
   if (points.length > 1) {
@@ -4737,6 +4737,11 @@ async function lockApp() {
 $("lock-forgot").addEventListener("click", function () {
   if (!confirm("Forgot your PIN?\n\nThe only way back in is to erase everything the app has saved on this phone (workouts, body log, photos). You can then restore a backup file.\n\nErase everything?")) return;
   if (!confirm("Last check: this can’t be undone. Erase all app data on this phone?")) return;
+  wipeEverything();
+});
+// Erases everything the app has saved on this phone (workouts, runs, photos, settings, the AI key,
+// scheduled reminders), then starts again from the welcome screen.
+function wipeEverything() {
   let finished = false;
   function finish() {
     if (finished) return;
@@ -4744,12 +4749,19 @@ $("lock-forgot").addEventListener("click", function () {
     try { localStorage.clear(); } catch (e) {}
     location.reload();
   }
+  if (NATIVE) nativeCall("LocalNotifications", "cancel", { notifications: REMIND_IDS.concat([2100, 900]).map(function (id) { return { id: id }; }) }).catch(function () {});
   try {
     if (photoStore.db) photoStore.db.close();
     const req = indexedDB.deleteDatabase("gymapp-photos");
     req.onsuccess = req.onerror = req.onblocked = finish;
     setTimeout(finish, 1500);
   } catch (e) { finish(); }
+}
+$("wipe-btn").addEventListener("click", async function () {
+  if (pinIsSet() && !(await verifyPin({ title: "Enter PIN to erase everything", cancellable: true }))) return;
+  if (!confirm("Erase EVERYTHING and start fresh?\n\nThis deletes all your workouts, runs, body log, photos, goals and settings from this phone.\n\nTip: tap Download backup first if you might want any of it back.")) return;
+  if (!confirm("Last check: this can’t be undone. Erase all app data on this phone?")) return;
+  wipeEverything();
 });
 
 // Lock again after you've been away for a while
@@ -7702,16 +7714,30 @@ function planWeeks(plan) {
   return weeks;
 }
 
+// A plan "week" is one calendar week, or one shift cycle when you have a shift pattern.
+function planLen() { return runPlan && runPlan.plen ? runPlan.plen : 7; }
+// If your shift pattern was switched on, off or changed after the plan began, re-time the plan to
+// it. You stay on the same plan week and keep every tick.
+function alignPlan() {
+  if (!runPlan || planLen() === periodLen()) return;
+  const oldLen = planLen(), today = dateKey(new Date());
+  const cur = Math.floor(Math.round((new Date(today + "T00:00:00") - new Date(runPlan.start + "T00:00:00")) / 86400000) / oldLen) + 1;
+  runPlan.plen = periodLen();
+  runPlan.start = addDays(periodStartKey(today), -(cur - 1) * runPlan.plen);
+  runPlan.retimed = true;
+  saveRunPlan();
+}
 function newRunPlan(o) {
   return { goal: RUN_GOALS[o.goal] ? o.goal : "5k", perWeek: Math.max(2, Math.min(4, Number(o.perWeek) || 3)),
-           t5: Math.max(720, Math.min(3600, Math.round(o.t5) || 1680)), start: weekBounds(0).start, done: {}, suggest: 0,
+           t5: Math.max(720, Math.min(3600, Math.round(o.t5) || 1680)), start: periodStartKey(dateKey(new Date())), plen: periodLen(), done: {}, suggest: 0,
            days: (Array.isArray(o.days) ? o.days : []).map(Number).filter(function (d, i, a) { return d >= 0 && d <= 6 && a.indexOf(d) === i; }).sort() };
 }
 // Which week of the plan today falls in (1 = first). Past the end = finished.
 function planWeekNow() {
   if (!runPlan) return 0;
+  alignPlan();
   const days = Math.round((new Date(dateKey(new Date()) + "T00:00:00") - new Date(runPlan.start + "T00:00:00")) / 86400000);
-  return Math.floor(days / 7) + 1;
+  return Math.floor(days / planLen()) + 1;
 }
 function findSession(id) {
   if (!runPlan) return null;
@@ -7746,11 +7772,12 @@ function renderCoach() {
   const doneThis = wk.sessions.filter(function (s) { return runPlan.done[s.id]; }).length;
   const next = wk.sessions.filter(function (s) { return !runPlan.done[s.id]; })[0];
   let html = `<div class="card-label">Running coach · ${g.label}</div>
-    <div class="up-row now" style="border:0;padding:0"><span class="big">Week ${wk.n} of ${weeks.length}</span><b>${doneThis} / ${wk.sessions.length} runs</b></div>
+    <div class="up-row now" style="border:0;padding:0"><span class="big">${planLen() === 7 ? "Week" : "Cycle"} ${wk.n} of ${weeks.length}</span><b>${doneThis} / ${wk.sessions.length} runs</b></div>
     <div class="obj-bar"><i style="width:${Math.round((wk.n - 1 + doneThis / wk.sessions.length) / weeks.length * 100)}%"></i></div>
-    ${wk.note ? `<div class="feed-meta" style="margin-top:.5rem">${wk.note}</div>` : ""}`;
-  const onDay = {}, placedRuns = runPlacement(addDays(runPlan.start, 7 * (wk.n - 1)), wk.sessions).place;
-  Object.keys(placedRuns).forEach(function (k) { onDay[placedRuns[k].id] = DAY_NAMES[k]; });
+    ${wk.note ? `<div class="feed-meta" style="margin-top:.5rem">${wk.note}</div>` : ""}
+    ${runPlan.retimed ? `<div class="feed-meta" style="margin-top:.5rem">${planLen() === 7 ? "Your plan now counts in calendar weeks." : "Your plan now counts in your " + planLen() + "-day shift cycles: one plan week per cycle. You are on the same week as before."}<button class="link-btn" data-co="ok-retimed">OK</button></div>` : ""}`;
+  const onDay = {}, startOf = addDays(runPlan.start, planLen() * (wk.n - 1)), placedRuns = runPlacement(startOf, wk.sessions, planLen()).place;
+  Object.keys(placedRuns).forEach(function (k) { onDay[placedRuns[k].id] = DAY_NAMES[weekdayOf(addDays(startOf, Number(k)))]; });
   wk.sessions.forEach(function (s) {
     const done = !!runPlan.done[s.id];
     html += `<div class="co-row${done ? " done" : ""}">
@@ -7777,8 +7804,8 @@ function openPlanSetup() {
   openSheet(`<div class="card-label">Running coach</div><div class="big">${runPlan ? "Change your plan" : "Build your plan"}</div>
     <div class="goal-group" style="margin-top:.9rem"><div class="card-label">What are you training for?</div>
       <div class="chips">${Object.keys(RUN_GOALS).map(function (k) { return chip("goal", k, RUN_GOALS[k].label); }).join("")}</div>
-      <div class="feed-meta" style="margin-top:.4rem">${g.weeks} weeks, building to a ${fmtKm(g.long[1])} long run.</div></div>
-    <div class="goal-group"><div class="card-label">Runs per week</div>
+      <div class="feed-meta" style="margin-top:.4rem">${g.weeks} ${goals.rota ? "shift cycles" : "weeks"}, building to a ${fmtKm(g.long[1])} long run.</div></div>
+    <div class="goal-group"><div class="card-label">Runs per ${goals.rota ? "cycle" : "week"}</div>
       <div class="chips">${chip("perWeek", 2, "2")}${chip("perWeek", 3, "3")}${chip("perWeek", 4, "4")}</div></div>
     ${goals.rota ? `<div class="goal-group"><div class="card-label">Run days</div><div class="feed-meta">Your run days follow your shift pattern. Change them under “Run on” in Me → Goals.</div></div>` : `<div class="goal-group"><div class="card-label">Run days</div>
       <div class="chips">${DAY_NAMES.map(function (n, i) { return `<button class="chip${d.days.indexOf(i) >= 0 ? " on" : ""}" data-run="day" data-v="${i}">${n}</button>`; }).join("")}</div>
@@ -7806,9 +7833,9 @@ function savePlanDraft() {
 }
 function openFullPlan() {
   const g = RUN_GOALS[runPlan.goal], now = planWeekNow();
-  openSheet(`<div class="card-label">${g.label} plan</div><div class="big">${g.weeks} weeks</div>
+  openSheet(`<div class="card-label">${g.label} plan</div><div class="big">${g.weeks} ${planLen() === 7 ? "weeks" : "shift cycles"}</div>
     ${planWeeks(runPlan).map(function (w) {
-      return `<div class="co-week${w.n === now ? " now" : ""}"><div class="card-label">Week ${w.n}${w.n === now ? " · this week" : ""} · ${fmtKm(w.km)}${w.note ? " · " + w.note : ""}</div>
+      return `<div class="co-week${w.n === now ? " now" : ""}"><div class="card-label">${planLen() === 7 ? "Week" : "Cycle"} ${w.n}${w.n === now ? (planLen() === 7 ? " · this week" : " · this cycle") : ""} · ${fmtKm(w.km)}${w.note ? " · " + w.note : ""}</div>
         ${w.sessions.map(function (s) { return `<div class="pr-row"><span>${runPlan.done[s.id] ? "✓ " : ""}${esc(s.title)}</span><span class="feed-meta">${fmtKm(s.km)}</span></div>`; }).join("")}</div>`;
     }).join("")}
     <button class="btn" data-a="add-close">Close</button>`);
@@ -7818,6 +7845,7 @@ $("coach-card").addEventListener("click", function (e) {
   const b = e.target.closest("[data-co]");
   if (!b) return;
   const a = b.dataset.co, id = b.dataset.id;
+  if (a === "ok-retimed") { runPlan.retimed = false; saveRunPlan(); renderCoach(); return; }
   if (a === "setup") { planDraft = null; openPlanSetup(); return; }
   if (a === "full") { openFullPlan(); return; }
   if (a === "end") { runPlan = null; saveRunPlan(); }
@@ -7883,9 +7911,52 @@ $("run-setup").addEventListener("change", function (e) {
 });
 
 function runTotals(offset) {
-  const b = weekBounds(offset), out = { count: 0, km: 0, secs: 0 };
+  const b = periodBounds(offset), out = { count: 0, km: 0, secs: 0 };
   runs.forEach(function (r) { if (r.date >= b.start && r.date <= b.end) { out.count++; out.km += r.km; out.secs += r.secs; } });
   return out;
+}
+// ----- run charts -----
+let runChart = { m: "dist", t: "all" };
+// One value per week or shift cycle, oldest first
+function runSeries(metric, type, n) {
+  const out = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const b = periodBounds(i);
+    let v = 0;
+    runs.forEach(function (r) {
+      if (r.date < b.start || r.date > b.end || (type !== "all" && r.type !== type)) return;
+      v += metric === "time" ? r.secs / 60 : r.km;
+    });
+    v = metric === "time" ? Math.round(v) : Math.round(distToDisp(v) * 10) / 10;
+    out.push({ label: new Date(b.start + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" }), v: v });
+  }
+  return out;
+}
+// Average pace of each run, oldest first (faster = higher on the chart)
+function paceSeries(type, n) {
+  return runs.filter(function (r) { return r.km >= 1 && r.secs > 0 && (type === "all" ? r.type !== "ride" : r.type === type); })
+    .sort(function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; }).slice(-n).map(function (r) { return { date: r.date, v: -(r.secs / r.km) }; });
+}
+function runChartsHtml() {
+  const types = {}; runs.forEach(function (r) { types[r.type] = true; });
+  const kinds = Object.keys(types);
+  if (runs.length < 2) return "";
+  const m = runChart.m, t = kinds.length > 1 ? runChart.t : "all";
+  const mc = [["dist", "Distance"], ["time", "Time"], ["pace", "Pace"]];
+  let body;
+  if (m === "pace") {
+    const pts = paceSeries(t, 20);
+    body = pts.length >= 2 ? lineChartSvg(pts, function (v) { return paceStr(-v); }) + `<div class="feed-meta">Average pace of your last ${pts.length} runs (${paceUnit()}). Higher is faster.</div>`
+      : `<p class="feed-meta">Pace needs at least two runs of 1 ${distUnit()} or more.</p>`;
+  } else {
+    const series = runSeries(m, t, 8);
+    body = series.some(function (p) { return p.v > 0; }) ? barChartSvg(series) + `<div class="feed-meta">${m === "dist" ? distUnit() : "Minutes"} per ${periodWord()}, last 8 ${periodWord()}s.</div>`
+      : `<p class="feed-meta">Nothing logged in the last 8 ${periodWord()}s.</p>`;
+  }
+  return `<div class="card"><div class="card-label">Your progress</div>
+    <div class="chips" style="margin-bottom:.6rem">${mc.map(function (c) { return `<button class="chip${m === c[0] ? " on" : ""}" data-rl="chart-m" data-v="${c[0]}">${c[1]}</button>`; }).join("")}</div>
+    ${kinds.length > 1 ? `<div class="chips" style="margin-bottom:.6rem">${[["all", "All"]].concat(kinds.map(function (k) { return [k, RUN_TYPES[k].label]; })).map(function (c) { return `<button class="chip${t === c[0] ? " on" : ""}" data-rl="chart-t" data-v="${c[0]}">${c[1]}</button>`; }).join("")}</div>` : ""}
+    ${body}</div>`;
 }
 function runStat(r) { return r.type === "ride" ? speedStr(r.km, r.secs) : paceStr(r.secs / r.km) + " " + paceUnit(); }
 function niceDate(key) { return new Date(key + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }); }
@@ -7895,8 +7966,9 @@ function renderRunList() {
   if (!el) return;
   if (!runs.length) { el.innerHTML = `<p class="feed-meta">Your runs, rides and walks will show here.</p>`; return; }
   const t = runTotals(0);
-  let html = `<div class="card"><div class="card-label">This week</div>
+  let html = `<div class="card"><div class="card-label">This ${periodWord()}</div>
     <div class="tk-stats"><div><b>${t.count}</b><span>${t.count === 1 ? "Activity" : "Activities"}</span></div><div><b>${fmt(round1(distToDisp(t.km)))}</b><span>${distUnit()}</span></div><div><b>${runClock(t.secs)}</b><span>Time</span></div></div></div>`;
+  html += runChartsHtml();
   const pb = runBests();
   if (Object.keys(pb).length) {
     html += `<div class="card"><div class="card-label">Your fastest</div>` +
@@ -7918,6 +7990,8 @@ $("run-list").addEventListener("click", function (e) {
   const b = e.target.closest("[data-rl]");
   if (!b) return;
   if (b.dataset.rl === "more") { runsShown += 10; renderRunList(); }
+  if (b.dataset.rl === "chart-m") { runChart.m = b.dataset.v; renderRunList(); }
+  if (b.dataset.rl === "chart-t") { runChart.t = b.dataset.v; renderRunList(); }
   if (b.dataset.rl === "open") openRunDetail(b.dataset.id, false);
 });
 
@@ -8280,10 +8354,12 @@ function placeRuns(sessions, days, weekend) {
 
 // The runs of one plan week on the days of one calendar week (Monday = mondayKey).
 // Gives back { place: {weekday: session}, spare: how many runs didn't fit }.
-function runPlacement(mondayKey, sessions) {
+function runPlacement(mondayKey, sessions, len) {
   if (!goals.rota) return { place: placeRuns(sessions, runDays()), spare: 0 };
-  // On a shift pattern the days you can run change from week to week
-  const r = goals.rota, all = [0, 1, 2, 3, 4, 5, 6];
+  // On a shift pattern the days you can run change from cycle to cycle
+  len = len || 7;
+  const r = goals.rota, all = [];
+  for (let i = 0; i < len; i++) all.push(i);
   const pos = function (d) { return cyclePos(addDays(mondayKey, d)); };
   let cand;
   if (r.run.length) cand = all.filter(function (d) { return r.run.indexOf(pos(d)) >= 0; });
@@ -8323,7 +8399,7 @@ function runPlacement(mondayKey, sessions) {
 }
 // Which week of the running plan a date falls in (1 = first)
 function planWeekOf(key) {
-  return Math.floor(Math.round((new Date(key + "T00:00:00") - new Date(runPlan.start + "T00:00:00")) / 86400000) / 7) + 1;
+  return Math.floor(Math.round((new Date(key + "T00:00:00") - new Date(runPlan.start + "T00:00:00")) / 86400000) / planLen()) + 1;
 }
 
 // A run of days starting at startKey (n of them), with the gym session and run
@@ -8359,26 +8435,27 @@ function schedule(startKey, n, now) {
   // Running: each plan week's runs on that calendar week's run days
   let late = 0, spare = 0;
   if (runPlan) {
-    const weeks = planWeeks(runPlan), seen = {};
+    alignPlan();
+    const weeks = planWeeks(runPlan), seen = {}, plen = planLen();
     days.forEach(function (d) {
-      const monday = weekStartKey(d.date);
+      const monday = periodStartKey(d.date);          // the first day of this plan week (a calendar week, or a shift cycle)
       if (seen[monday]) return;
       seen[monday] = true;
       const w = planWeekOf(monday);
       if (w < 1 || w > weeks.length) return;
-      const fit = runPlacement(monday, weeks[w - 1].sessions);
-      if (monday === weekStartKey(today)) spare = fit.spare;
+      const fit = runPlacement(monday, weeks[w - 1].sessions, plen);
+      if (monday === periodStartKey(today)) spare = fit.spare;
       Object.keys(fit.place).forEach(function (k) {
         const s = fit.place[k], doneId = runPlan.done[s.id];
         let key = addDays(monday, Number(k));
         if (doneId) {                                       // show a finished run on the day it was actually done
           const rec = runs.filter(function (r) { return r.id === doneId; })[0];
-          if (rec && weekStartKey(rec.date) === monday) key = rec.date;
+          if (rec && periodStartKey(rec.date) === monday) key = rec.date;
         }
         const d2 = byDate[key];
         if (!d2 || d2.run) return;
         d2.run = { s: s, done: !!doneId, late: !doneId && d2.past };
-        if (!doneId && d2.past && monday === weekStartKey(today)) late++;
+        if (!doneId && d2.past && monday === periodStartKey(today)) late++;
       });
     });
   }
@@ -8967,7 +9044,7 @@ function coachContext() {
         }).join("; "));
     });
   } else L.push("No gym sessions logged yet.");
-  if (runPlan) L.push("Running plan: " + RUN_GOALS[runPlan.goal].label + ", " + runPlan.perWeek + " runs a week, week " + planWeekNow() + " of " + RUN_GOALS[runPlan.goal].weeks + ", current 5K " + runClock(runPlan.t5) + ".");
+  if (runPlan) L.push("Running plan: " + RUN_GOALS[runPlan.goal].label + ", " + runPlan.perWeek + " runs per " + (planLen() === 7 ? "week" : "shift cycle") + ", plan " + (planLen() === 7 ? "week " : "cycle ") + planWeekNow() + " of " + RUN_GOALS[runPlan.goal].weeks + ", current 5K " + runClock(runPlan.t5) + ".");
   const rr = runs.slice(-6);
   if (rr.length) L.push("Recent runs: " + rr.map(function (r) { return r.date + " " + r.type + " " + fmtKm(r.km) + " in " + runClock(r.secs) + (r.type === "ride" || !r.km ? "" : " (" + paceStr(r.secs / r.km) + paceUnit() + ")"); }).join("; ") + ".");
   const days = schedule(today, 8).days.filter(function (d) { return d.gym || d.run; }).map(function (d) { return d.name + " " + d.dom + ": " + dayPlanText(d) + (d.warn ? " [" + d.warn + "]" : ""); });
