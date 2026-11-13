@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "2.12.0";
+const APP_VERSION = "2.20.0";
 
 // =====================================================================
 // SMALL HELPERS
@@ -50,6 +50,47 @@ function mmss(seconds) {
 // so you can switch between kg and lb without damaging your history.
 // =====================================================================
 const KG_PER_LB = 0.45359237;
+
+// Runs, rides and walks (the RUN section further down explains these). They are
+// set up here, near the top, because other parts of the app read them early on.
+let runs = load("runs", []);
+let runPlan = load("runPlan", null);
+let runPrefs = Object.assign({ type: "run", goal: "free", km: 5, mins: 30, outBack: false, cues: "1", voice: "on", autoPause: "on", ghost: "on" }, load("runPrefs", {}));
+let trk = { on: false, armed: false };   // the run in progress, if any
+
+// Is this the installed Android app (rather than the website)? The installed app
+// can use the phone's own GPS service and voice, which keep working when the
+// phone is locked. "Capacitor" is the shell the installed app is wrapped in.
+const NATIVE = typeof window !== "undefined" && !!window.Capacitor &&
+               typeof window.Capacitor.isNativePlatform === "function" && window.Capacitor.isNativePlatform();
+let nativeNote = "";   // the last thing the phone's GPS service or voice complained about, shown on the run screen
+
+// Asks one of the phone's own services to do something. Always gives back a promise.
+// The installed app draws under the phone's status bar. The page normally learns
+// the bar's height by itself; if this phone doesn't report one, assume a typical 36px.
+if (NATIVE) {
+  setTimeout(function () {
+    try {
+      const probe = document.createElement("div");
+      probe.style.cssText = "position:fixed;top:0;left:0;width:1px;height:var(--sat);visibility:hidden";
+      document.body.appendChild(probe);
+      const h = probe.getBoundingClientRect().height;
+      probe.remove();
+      if (h < 1) document.documentElement.style.setProperty("--sat-min", "36px");
+    } catch (err) { /* cosmetic only */ }
+  }, 300);
+}
+
+function nativeCall(plugin, method, options, callback) {
+  try {
+    const cap = window.Capacitor;
+    const p = cap.Plugins && cap.Plugins[plugin];
+    if (p && typeof p[method] === "function") return Promise.resolve(callback ? p[method](options, callback) : p[method](options));
+    if (callback && typeof cap.nativeCallback === "function") return Promise.resolve(cap.nativeCallback(plugin, method, options, callback));
+    if (typeof cap.nativePromise === "function") return Promise.resolve(cap.nativePromise(plugin, method, options));
+    return Promise.reject(new Error(plugin + " is not installed in this build"));
+  } catch (err) { return Promise.reject(err); }
+}
 const REST_OPTIONS = [45, 60, 90, 120, 180, 240];
 
 let settings = load("settings", { units: "kg", rest: 90 });
@@ -135,7 +176,12 @@ function renderSettings() {
     group("Default rest time", "rest", [[60, "1:00"], [90, "1:30"], [120, "2:00"], [180, "3:00"]]) +
     group("Auto warm-up sets", "warmup", [["off", "Off"], ["barbell", "Barbell lifts"]]) +
     group("Keep screen on while training", "awake", [["on", "On"], ["off", "Off"]]) +
-    '<div class="feed-meta">Stops the phone locking mid-workout, so the rest timer can always buzz. Uses a little more battery.</div>';
+    '<div class="feed-meta">Stops the phone locking mid-workout, so the rest timer can always buzz. Uses a little more battery.</div>' +
+    (NATIVE
+      ? group("Workout reminders", "remind", [["off", "Off"], ["on", "On"]]) +
+        (settings.remind === "on" ? group("Remind me at", "remindAt", [["07:00", "7 am"], ["12:00", "Noon"], ["17:00", "5 pm"], ["19:00", "7 pm"]]) : "") +
+        '<div class="feed-meta">A notification on days with a gym session or run planned, and a nudge on Sunday if the week is slipping. If you lock the phone mid-rest, it also rings when the rest is over.</div>'
+      : '<div class="feed-meta" style="margin-top:.8rem">Workout reminders are available in the installed Android app.</div>');
 }
 
 function setAccent(hex) {
@@ -160,7 +206,12 @@ $("settings-card").addEventListener("click", function (e) {
   if (!btn) return;
   const key = btn.dataset.skey;
   settings[key] = key === "rest" ? Number(btn.dataset.value) : btn.dataset.value;
+  if (key === "remind" && settings.remind === "on" && !settings.remindAt) settings.remindAt = "17:00";
   save("settings", settings);
+  if (key === "remind" || key === "remindAt") {
+    if (NATIVE && settings.remind === "on") nativeCall("LocalNotifications", "requestPermissions", {}).catch(function () {});
+    queueReminders();
+  }
   applyTheme();
   renderSettings();
   renderGear();
@@ -181,7 +232,7 @@ const screens = document.querySelectorAll(".screen");
 // A sub-tab is either a whole screen, or one part (data-sub) of a bigger screen.
 const NAV = {
   home:     { subs: [{ screen: "home", label: "Home" }] },
-  train:    { subs: [{ screen: "workout", label: "Workout" }, { screen: "library", label: "Library" }] },
+  train:    { subs: [{ screen: "workout", label: "Workout" }, { screen: "run", label: "Run" }, { screen: "library", label: "Library" }] },
   progress: { subs: [{ screen: "progress", sub: "charts", label: "Charts" }, { screen: "progress", sub: "body", label: "Body" },
                      { screen: "progress", sub: "awards", label: "Awards" }, { screen: "feed", label: "History" }] },
   me:       { subs: [{ screen: "gym", sub: "goals", label: "Goals" }, { screen: "gym", sub: "equip", label: "Gym" },
@@ -259,6 +310,8 @@ $("home").addEventListener("click", function (e) {
   const a = b.dataset.action;
   if (a === "gym") { showTab("gym"); return; }
   if (a === "start-workout") { showTab("workout"); return; }
+  if (a === "start-run") { showTab("run"); return; }
+  if (a === "coach") { openCoach(); return; }
   if (a === "export-backup") { exportBackup(); return; }
 });
 $("save-warn").addEventListener("click", function (e) {
@@ -355,7 +408,8 @@ function renderEquipment() {
   listEl.innerHTML = html;
 
   $("count").textContent = selected.length + " of " + total + " items selected";
-  $("home-equip").textContent = selected.length + " items";
+  const equipTile = document.getElementById("home-equip");
+  if (equipTile) equipTile.textContent = selected.length + " items";
   $("home-gym-sub").textContent = selected.length + (selected.length === 1 ? " item of equipment" : " items of equipment");
 }
 
@@ -466,9 +520,26 @@ function normGoals(g) {
   // Days you train: 0 = Monday ... 6 = Sunday. Empty = whenever suits you.
   g.trainDays = (Array.isArray(g.trainDays) ? g.trainDays : []).map(Number)
     .filter(function (d, i, arr) { return d >= 0 && d <= 6 && d === Math.floor(d) && arr.indexOf(d) === i; }).sort();
+  g.rota = normRota(g.rota);
   if (!g.sore || typeof g.sore !== "object" || !Array.isArray(g.sore.muscles)) g.sore = null;
   g.proteinTarget = Number(g.proteinTarget) > 0 ? Math.round(Number(g.proteinTarget)) : null;
   return g;
+}
+
+// A shift pattern: a cycle of so-many days that repeats, instead of a Monday-to-Sunday
+// week. len = days in the cycle, work/gym/run = which days of the cycle (0 = day 1),
+// start = a date that was day 1. null = not used.
+function normRota(r) {
+  if (!r || typeof r !== "object") return null;
+  const len = Math.max(2, Math.min(28, Math.round(Number(r.len)) || 8));
+  const tidy = function (list) {
+    return (Array.isArray(list) ? list : []).map(Number)
+      .filter(function (d, i, arr) { return d >= 0 && d < len && d === Math.floor(d) && arr.indexOf(d) === i; }).sort(function (a, b) { return a - b; });
+  };
+  const work = tidy(r.work);
+  return { len: len, work: work, gym: tidy(r.gym), run: tidy(r.run),
+           nights: tidy(r.nights).filter(function (d) { return work.indexOf(d) >= 0; }),     // which work days are night shifts
+           start: /^\d{4}-\d{2}-\d{2}$/.test(r.start) && !isNaN(new Date(r.start + "T00:00:00")) ? r.start : dateKey(new Date()) };
 }
 
 let goals = normGoals(load("goals", {
@@ -490,7 +561,13 @@ function isAvoided(ex) {
 // How you said you feel today ("fresh", "normal", "tired"), or null if you haven't said
 function readinessToday() {
   const r = goals.readiness;
-  return r && r.date === dateKey(new Date()) ? r.level : null;
+  if (r && r.date === dateKey(new Date())) return r.level;
+  return shiftReadiness();          // you haven't said: go by your shifts (tired on the first day off after nights)
+}
+// Did the answer come from you, or from your shift pattern?
+function readinessFromShifts() {
+  const r = goals.readiness;
+  return !(r && r.date === dateKey(new Date())) && shiftReadiness() !== null;
 }
 
 // Weekly sets to aim for, per muscle: [low, high]
@@ -580,59 +657,59 @@ function targetTitle(t) { return t.type === "weight" ? "Bodyweight" : t.exercise
 
 let tForm = { type: "weight", exercise: "", goal: "", reps: "1", date: "" };
 
+// Which sections of the Goals card are open (remembered while the app is open)
+const goalsOpen = { goal: true, schedule: false, session: false, body: false };
 function renderGoals() {
-  let html = "";
-
-  for (const key in goalOptions) {
+  const optGroup = function (key) {
     const g = goalOptions[key];
-    html += `<div class="goal-group">
-               <div class="card-label">${g.label}</div>
-               <div class="chips">`;
-    g.options.forEach(function (opt) {
-      const isOn = goals[key] === opt;
-      html += `<button class="chip${isOn ? " on" : ""}" data-key="${key}" data-value="${opt}">${opt}${g.suffix || ""}</button>`;
-    });
-    html += `</div>`;
-    if (key === "goal") html += `<div class="feed-meta goal-blurb">${esc(goalProfile().blurb)}</div>`;
-    html += `</div>`;
-    if (key === "days") {
-      html += `<div class="goal-group"><div class="card-label">Split</div><div class="chips">` +
-        Object.keys(SPLITS).map(function (k) {
-          return `<button class="chip${goals.split === k ? " on" : ""}" data-key="split" data-value="${k}">${SPLITS[k].label}</button>`;
-        }).join("") + `</div><div class="feed-meta goal-blurb">${esc(splitNote())}</div></div>`;
-      const td = goals.trainDays;
-      html += `<div class="goal-group"><div class="card-label">Training days (optional)</div><div class="chips">` +
-        DAY_NAMES.map(function (d, i) {
-          return `<button class="chip${td.indexOf(i) >= 0 ? " on" : ""}" data-day="${i}">${d}</button>`;
-        }).join("") + `</div><div class="feed-meta goal-blurb">${!td.length ? "Not set: train whenever suits you." :
-          (td.length >= 2 && td.length <= 6) ? td.length + " days picked, so days per week is " + td.length + ". Other days show as rest days on Home." :
-          "Pick between 2 and 6 days to set your days per week from this."}</div></div>`;
-    }
-  }
+    return `<div class="goal-group"><div class="card-label">${g.label}</div><div class="chips">` +
+      g.options.map(function (opt) { return `<button class="chip${goals[key] === opt ? " on" : ""}" data-key="${key}" data-value="${opt}">${opt}${g.suffix || ""}</button>`; }).join("") +
+      `</div>${key === "goal" ? `<div class="feed-meta goal-blurb">${esc(goalProfile().blurb)}</div>` : ""}</div>`;
+  };
+  const r = goals.rota, td = goals.trainDays;
+  const splitName = goals.split === "auto" ? autoSplitLabel() : SPLITS[goals.split].label;
 
-  html += `<div class="goal-group"><div class="card-label">Focus muscles (up to 3)</div><div class="chips">`;
-  MUSCLES.forEach(function (m) {
-    html += `<button class="chip${goals.focus.includes(m[0]) ? " on" : ""}" data-multi="focus" data-value="${m[0]}">${m[1]}</button>`;
-  });
-  html += `</div><div class="feed-meta goal-blurb">${goals.focus.length ? "These get an extra set and an extra exercise when the session allows." : "None picked: your plan is balanced."}</div></div>`;
-
-  html += `<div class="goal-group"><div class="card-label">Avoid (injuries or niggles)</div><div class="chips">`;
-  Object.keys(AVOID_AREAS).forEach(function (a) {
-    html += `<button class="chip${goals.avoid.includes(a) ? " on" : ""}" data-multi="avoid" data-value="${a}">${a}</button>`;
-  });
-  html += `</div><div class="feed-meta goal-blurb">${goals.avoid.length ? "Exercises that load these are left out of your plans." : "Nothing avoided."}</div></div>`;
-
-  html += `<div class="goal-group"><div class="card-label">Rest timer</div><div class="chips">
+  const splitHtml = `<div class="goal-group"><div class="card-label">Split</div><div class="chips">` +
+    Object.keys(SPLITS).map(function (k) { return `<button class="chip${goals.split === k ? " on" : ""}" data-key="split" data-value="${k}">${SPLITS[k].label}</button>`; }).join("") +
+    `</div><div class="feed-meta goal-blurb">${esc(splitNote())}</div></div>`;
+  const daysHtml = `<div class="goal-group"><div class="card-label">Training days (optional)</div><div class="chips">` +
+    DAY_NAMES.map(function (d, i) { return `<button class="chip${td.indexOf(i) >= 0 ? " on" : ""}" data-day="${i}">${d}</button>`; }).join("") +
+    `</div><div class="feed-meta goal-blurb">${!td.length ? "Not set: train whenever suits you." :
+      (td.length >= 2 && td.length <= 6) ? td.length + " days picked, so days per week is " + td.length + ". Other days show as rest days on Home." :
+      "Pick between 2 and 6 days to set your days per week from this."}</div></div>`;
+  const focusHtml = `<div class="goal-group"><div class="card-label">Focus muscles (up to 3)</div><div class="chips">` +
+    MUSCLES.map(function (m) { return `<button class="chip${goals.focus.includes(m[0]) ? " on" : ""}" data-multi="focus" data-value="${m[0]}">${m[1]}</button>`; }).join("") +
+    `</div><div class="feed-meta goal-blurb">${goals.focus.length ? "These get an extra set and an extra exercise when the session allows." : "None picked: your plan is balanced."}</div></div>`;
+  const avoidHtml = `<div class="goal-group"><div class="card-label">Avoid (injuries or niggles)</div><div class="chips">` +
+    Object.keys(AVOID_AREAS).map(function (a) { return `<button class="chip${goals.avoid.includes(a) ? " on" : ""}" data-multi="avoid" data-value="${a}">${a}</button>`; }).join("") +
+    `</div><div class="feed-meta goal-blurb">${goals.avoid.length ? "Exercises that load these are left out of your plans." : "Nothing avoided."}</div></div>`;
+  const restHtml = `<div class="goal-group"><div class="card-label">Rest timer</div><div class="chips">
     <button class="chip${goals.autoRest ? " on" : ""}" data-key="autoRest" data-value="1">Set by goal</button>
     <button class="chip${!goals.autoRest ? " on" : ""}" data-key="autoRest" data-value="0">Always my setting</button></div></div>`;
-
   const t = weeklyTargets();
-  html += `<details class="goal-weekly"><summary>Your weekly set targets</summary>` +
-    MUSCLES.map(function (m) { return `<div class="obj-line"><span>${m[1]}</span><span>${t[m[0]][0]}-${t[m[0]][1]} sets</span></div>`; }).join("") +
-    `</details>`;
+  const targetsHtml = `<details class="goal-weekly"><summary>Your weekly set targets</summary>` +
+    MUSCLES.map(function (m) { return `<div class="obj-line"><span>${m[1]}</span><span>${t[m[0]][0]}-${t[m[0]][1]} sets</span></div>`; }).join("") + `</details>`;
+
+  // Each section folds away, showing what is currently chosen so you rarely need to open it
+  const muscleName = function (k) { const m = MUSCLES.find(function (x2) { return x2[0] === k; }); return m ? m[1] : k; };
+  const section = function (id, title, now, body) {
+    return `<details class="fold" data-sec="${id}"${goalsOpen[id] ? " open" : ""}><summary><span class="fold-t">${title}</span><span class="fold-v">${esc(now)}</span></summary><div class="fold-body">${body}</div></details>`;
+  };
+  // On a shift pattern the weekday choices don't apply, so they are left out
+  const html =
+    section("goal", "Goal", goals.goal + " · " + goals.experience, optGroup("goal") + optGroup("experience")) +
+    section("schedule", "Schedule", r ? (r.work.length + " on, " + (r.len - r.work.length) + " off · " + r.gym.length + " gym days a cycle · " + splitName) : (goals.days + " days a week · " + splitName + (td.length ? " · " + td.map(function (d) { return DAY_NAMES[d]; }).join(", ") : "")),
+      (r ? "" : optGroup("days")) + splitHtml + (r ? "" : daysHtml) + rotaHtml()) +
+    section("session", "Session", goals.minutes + " min · rest " + (goals.autoRest ? "set by goal" : "always my setting"), optGroup("minutes") + restHtml) +
+    section("body", "Focus and injuries", (goals.focus.length ? "Focus: " + goals.focus.map(muscleName).join(", ") : "Balanced") + (goals.avoid.length ? " · Avoiding: " + goals.avoid.join(", ").toLowerCase() : ""), focusHtml + avoidHtml + targetsHtml);
 
   $("goals-card").innerHTML = html;
 }
+// Remember which sections are open, so tapping a choice doesn't fold everything shut
+$("goals-card").addEventListener("toggle", function (e) {
+  const sec = e.target && e.target.dataset ? e.target.dataset.sec : null;
+  if (sec) goalsOpen[sec] = !!e.target.open;
+}, true);
 
 $("goals-card").addEventListener("click", function (e) {
   const multi = e.target.closest("[data-multi]");
@@ -647,6 +724,8 @@ $("goals-card").addEventListener("click", function (e) {
     refreshPlanAfterGoalChange();
     return;
   }
+  const rotaBtn = e.target.closest("[data-rota]");
+  if (rotaBtn) { rotaClick(rotaBtn.dataset.rota, Number(rotaBtn.dataset.v)); return; }
   const dayBtn = e.target.closest("[data-day]");
   if (dayBtn) {
     const d = Number(dayBtn.dataset.day);
@@ -674,6 +753,14 @@ $("goals-card").addEventListener("click", function (e) {
   save("goals", goals);
   renderGoals();
   refreshPlanAfterGoalChange();
+});
+
+$("goals-card").addEventListener("change", function (e) {
+  if (e.target.id !== "rota-start" || !goals.rota) return;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(e.target.value)) goals.rota.start = e.target.value;
+  save("goals", goals);
+  renderGoals();
+  refreshHome();
 });
 
 // If today's workout hasn't been started, rebuild it so it matches the new goals
@@ -817,14 +904,14 @@ function renderObjectives() {
   const el = $("objectives");
   if (!el) return;
   const info = programmeInfo();
-  const b = weekBounds(0);
-  const goalDays = Math.max(1, Math.min(7, Number(goals.days) || 3));
+  const b = periodBounds(0);
+  const goalDays = periodGoal();
   const doneDays = new Set(getWorkoutDates().filter(function (d) { return d >= b.start && d <= b.end; })).size;
   const mc = muscleCounts(0).counts;
   const tg = weeklyTargets();
   const bar = function (pct) { return `<div class="obj-bar"><i style="width:${Math.round(Math.max(0, Math.min(1, pct)) * 100)}%"></i></div>`; };
 
-  let html = `<div class="card-label">This week</div>`;
+  let html = `<div class="card-label">This ${periodWord()}</div>`;
   if (info && !info.done) html += `<div class="obj-prog"><b>Week ${info.week} of ${info.weeks} · ${info.name}</b><span class="feed-meta">${info.tip}</span></div>`;
 
   html += `<div class="obj-line"><span>Workouts</span><span>${doneDays} / ${goalDays}</span></div>${bar(doneDays / goalDays)}`;
@@ -842,7 +929,7 @@ function renderObjectives() {
     const m = MUSCLES.find(function (x2) { return x2[0] === k; });
     html += `<div class="obj-line"><span>${m ? m[1] : k} sets</span><span>${mc[k] || 0} / ${tg[k][0]}-${tg[k][1]}</span></div>${bar((mc[k] || 0) / tg[k][0])}`;
   });
-  html += `<details class="goal-weekly"><summary>All muscles</summary>` + order.map(function (k) {
+  html += `<details class="goal-weekly"><summary>${goals.rota ? "Sets per muscle (this calendar week)" : "All muscles"}</summary>` + order.map(function (k) {
     const m = MUSCLES.find(function (x2) { return x2[0] === k; });
     return `<div class="obj-line"><span>${m[1]}</span><span>${mc[k] || 0} / ${tg[k][0]}-${tg[k][1]}</span></div>${bar((mc[k] || 0) / tg[k][0])}`;
   }).join("") + `</details>`;
@@ -911,42 +998,73 @@ function renderWeek() {
 // days in a row is the wrong thing to reward. A week counts when you trained on
 // at least your goal number of days. This week counts as soon as you hit it,
 // and does not break the streak while it is still in progress.
+// ----- weeks, or shift cycles -----
+// Most people count training by the week. On a shift pattern the natural unit is
+// one cycle (8 days for 4 on, 4 off), so the streak, the Home bar and the review
+// count in cycles instead. "Period" below means whichever applies.
+function periodLen() { return goals.rota ? goals.rota.len : 7; }
+function periodWord() { return goals.rota ? "cycle" : "week"; }
+function periodStartKey(key) { return goals.rota ? addDays(key, -cyclePos(key)) : weekStartKey(key); }
+// days (optional): only the first so-many days of the period
+function periodBounds(offset, days) {
+  if (!goals.rota) return weekBounds(offset, days);
+  const len = goals.rota.len;
+  const start = addDays(periodStartKey(dateKey(new Date())), -len * (offset || 0));
+  return { start: start, end: addDays(start, (days >= 1 && days <= len ? days : len) - 1) };
+}
+// Which day of the period today is (1 = first)
+function periodDay() { return goals.rota ? cyclePos(dateKey(new Date())) + 1 : todayIndex() + 1; }
+// How many training days make the goal: your gym days per cycle, or your days per week
+function periodGoal() {
+  if (goals.rota && goals.rota.gym.length) return goals.rota.gym.length;
+  return Math.max(1, Math.min(7, Number(goals.days) || 3));
+}
+
 function weekStreak() {
-  const goalDays = Math.max(1, Math.min(7, Number(goals.days) || 3));
+  const goalDays = periodGoal();
   const perWeek = {};
   getWorkoutDates().forEach(function (d) {
-    const k = weekStartKey(d);
+    const k = periodStartKey(d);
     (perWeek[k] = perWeek[k] || {})[d] = true;
   });
   const hit = function (offset) {
-    const days = perWeek[weekBounds(offset).start];
+    const days = perWeek[periodBounds(offset).start];
     return !!days && Object.keys(days).length >= goalDays;
   };
   let count = hit(0) ? 1 : 0;
   for (let i = 1; hit(i); i++) count++;
   return count;
 }
-function streakText(n) { return n + (n === 1 ? " week" : " weeks"); }
+function streakText(n) { return n + " " + periodWord() + (n === 1 ? "" : "s"); }
 
 function renderStreak() {
-  $("streak").textContent = streakText(weekStreak());
+  const el = document.getElementById("streak");     // the old Streak tile; the bar at the top of Home shows it now
+  if (el) el.textContent = streakText(weekStreak());
 }
 
 // The segmented bar: one segment per training day in your goal, filled as you complete them
 function renderWeekbar() {
-  const goalDays = Math.max(1, Math.min(7, Number(goals.days) || 3));
-  const b = weekBounds(0);
+  const goalDays = periodGoal();
+  const b = periodBounds(0);
   const doneDays = new Set(getWorkoutDates().filter(function (d) { return d >= b.start && d <= b.end; })).size;
   const n = weekStreak();
 
   let segs = "";
   for (let i = 0; i < goalDays; i++) segs += `<i class="${i < doneDays ? "on" : ""}"></i>`;
   $("weekbar").innerHTML = `<div class="wb-segs">${segs}</div>
-    <div class="wb-text"><span>${doneDays} of ${goalDays} completed this week</span>
+    <div class="wb-text"><span>${doneDays} of ${goalDays} completed this ${periodWord()}</span>
     <span>Streak: ${streakText(n)}</span></div>`;
 }
 
-// The big "Next workout" card: what's in it and roughly how long it takes
+// The big card on Home answers one question: what am I doing today?
+// It has four states: a gym day, a run-only day, a rest day, and "done for today".
+function todayState() {
+  const day = schedule(dateKey(new Date()), 1).days[0];
+  const run = day.run && day.run.s && !day.run.done ? day.run.s : null;
+  const done = trainedToday();
+  const rest = isRestDay();
+  return { run: run, done: done, rest: rest, kind: done ? "done" : rest ? (run ? "run" : "rest") : "gym" };
+}
 function renderHero() {
   const exercises = workout.exercises.length;
   let sets = 0;
@@ -955,15 +1073,48 @@ function renderHero() {
   });
   const mins = Math.max(5, Math.round(sets * 3.5 / 5) * 5);   // about 3.5 minutes a set, rest included
   const _ph = programmeInfo();
-  $("hero-label").textContent = (goals.goal || "") + (_ph && !_ph.done ? " · Week " + _ph.week + " of " + _ph.weeks : "");
-  $("next-meta").textContent = exercises
+  const gymLine = exercises
     ? exercises + (exercises === 1 ? " exercise" : " exercises") + " • " + sets + (sets === 1 ? " set" : " sets") + " • ~" + mins + " mins"
     : "Add some exercises to get started";
+  const st = todayState();
+  const next = upcomingSessions(1)[0], when = nextSessionLabel();
+  const nextLine = "Next: " + next + (when === "Today" ? "" : " · " + when);
+  const btn = $("hero-btn"), extra = $("hero-extra");
+
+  $("hero-label").textContent = (goals.goal || "") + (_ph && !_ph.done ? " · Week " + _ph.week + " of " + _ph.weeks : "");
+  $("hero-pill").textContent = st.kind === "done" ? "Done for today" : st.kind === "rest" ? "Rest day" : st.kind === "run" ? "Run day" : hasFixedDays() ? "Today" : "Next workout";
+  btn.className = "btn";
+  btn.dataset.action = "start-workout";
+  extra.innerHTML = "";
+
+  if (st.kind === "gym") {
+    $("next-workout").textContent = workout.name;
+    $("next-meta").textContent = gymLine;
+    btn.textContent = "Start";
+    if (st.run) extra.innerHTML = `<div class="hero-also"><span>Also today: <b>${esc(runShort(st.run))}</b></span><button class="tool" data-action="start-run">Run</button></div>`;
+  } else if (st.kind === "run") {
+    $("next-workout").textContent = runShort(st.run);
+    $("next-meta").textContent = sessionLine(st.run);
+    btn.textContent = "Start run";
+    btn.dataset.action = "start-run";
+    extra.innerHTML = `<div class="hero-also"><span>No gym today. ${esc(nextLine)}.</span><button class="tool" data-action="start-workout">Lift anyway</button></div>`;
+  } else if (st.kind === "rest") {
+    $("next-workout").textContent = "Rest day";
+    $("next-meta").textContent = nextLine + ".";
+    btn.textContent = "Train anyway";
+    btn.className = "btn ghost";
+  } else {
+    $("next-workout").textContent = "Session done";
+    $("next-meta").textContent = nextLine + ".";
+    btn.textContent = "Train again";
+    btn.className = "btn ghost";
+    if (st.run) extra.innerHTML = `<div class="hero-also"><span>Still to do: <b>${esc(runShort(st.run))}</b></span><button class="tool" data-action="start-run">Run</button></div>`;
+  }
   $("home-gym-sub").textContent = selected.length + (selected.length === 1 ? " item of equipment" : " items of equipment");
 }
 
-$("upnext").addEventListener("click", function (e) {
-  if (!e.target.closest("#skip-session")) return;
+// "Skip to next session", or back to the split when something else is loaded
+function skipOrBack() {
   const s = upcomingSessions(1);
   if (workout.fromRoutine || workout.name !== s[0]) {
     // A routine or custom workout is loaded: go back to the split's session
@@ -975,6 +1126,11 @@ $("upnext").addEventListener("click", function (e) {
     return;
   }
   skipSession();
+}
+$("weekplan").addEventListener("click", function (e) { if (e.target.closest("[data-wp]")) skipOrBack(); });
+
+$("upnext").addEventListener("click", function (e) {
+  if (e.target.closest("#skip-session")) skipOrBack();
 });
 
 $("alt-tiles").addEventListener("click", function (e) {
@@ -1014,9 +1170,10 @@ function renderUpNext() {
   const row = function (label, name, now) { return `<div class="up-row${now ? " now" : ""}"><span>${label}</span><b>${esc(name)}</b></div>`; };
   const first = nextSessionLabel();
   const rest = isRestDay();
-  const pill = $("hero-pill");
-  if (pill) pill.textContent = rest ? "Rest day" : trainedToday() ? "Done for today" : "Next workout";
-  const daysLine = goals.trainDays.length ? `<div class="feed-meta" style="margin-top:.7rem">Training days: ` +
+  const daysLine = goals.rota
+    ? `<div class="feed-meta" style="margin-top:.7rem">Shift pattern: today is <b style="color:var(--text)">${cycleLabel(cyclePos(dateKey(new Date())))}</b>.` +
+      (goals.rota.gym.length ? " Gym on " + goals.rota.gym.map(cycleLabel).join(", ") + "." : "") + (rest ? " Today is a rest day; you can still train if you want to." : "") + `</div>`
+    : goals.trainDays.length ? `<div class="feed-meta" style="margin-top:.7rem">Training days: ` +
     goals.trainDays.map(function (d) { return d === todayIndex() ? "<b style=\"color:var(--text)\">" + DAY_NAMES[d] + "</b>" : DAY_NAMES[d]; }).join(" · ") +
     (rest ? ". Today is a rest day; you can still train if you want to." : ".") + `</div>` : "";
   el.innerHTML = `<div class="card-label">Up next · ${esc(goals.split === "auto" ? autoSplitLabel() : SPLITS[goals.split].label)}</div>` +
@@ -1027,6 +1184,9 @@ function renderUpNext() {
 
 function refreshHome() {
   renderUpNext();
+  renderWeekPlan();
+  renderHero();
+  queueReminders();
   renderProtein();
   renderWeekbar();
   renderObjectives();
@@ -1066,6 +1226,7 @@ function tickRest() {
 function stopRest() {
   clearInterval(restTimer);
   restTimer = null;
+  restNotify(false);
   $("rest").classList.remove("show");
   syncWake();
 }
@@ -1969,7 +2130,7 @@ function renderReadiness() {
   el.innerHTML = `<div class="card-label">How do you feel today?</div><div class="chips">` +
     [["fresh", "Fresh"], ["normal", "Normal"], ["tired", "Tired"]].map(function (o) {
       return `<button class="chip${r === o[0] ? " on" : ""}" data-r="${o[0]}">${o[1]}</button>`;
-    }).join("") + `</div>`;
+    }).join("") + `</div>` + (readinessFromShifts() ? `<div class="feed-meta" style="margin-top:.4rem">Set to Tired from your shifts: ${esc(recoveryNote(dateKey(new Date())))} Tap another if you feel better than that.</div>` : "");
 }
 
 // (the soreness chips sit right under these)
@@ -2462,6 +2623,25 @@ function syncSetup() {
 }
 $("setup-toggle").addEventListener("click", function () { setupOpen = !setupOpen; syncSetup(); });
 
+let prsAll = false;      // Progress: show every personal record, or just the top six
+
+// Exercises you have finished and moved on from fold down to one line (tap to reopen).
+// An exercise only folds once you tick a set in a different one, so you can still
+// add a rating or a note straight after its last set.
+let foldedDone = new WeakSet();
+function foldFinished(exceptEx) {
+  workout.exercises.forEach(function (ex) {
+    if (ex !== exceptEx && ex.sets.length && ex.sets.every(function (s) { return s.done; })) foldedDone.add(ex);
+  });
+}
+function doneLine(ex) {
+  if (isCardio(ex.name)) return ex.sets.map(cardioText).join(", ");
+  let best = null;
+  ex.sets.forEach(function (s) { if (s.warmup) return; const kg = parseFloat(s.weight) || 0; if (!best || kg > best.kg) best = { kg: kg, reps: parseInt(s.reps) || 0 }; });
+  const n = ex.sets.filter(function (s) { return !s.warmup; }).length;
+  return n + (n === 1 ? " set" : " sets") + (best && best.kg ? " · top " + fmtW(best.kg) + " " + unit() + " × " + best.reps : "");
+}
+
 function renderWorkout() {
   syncSetup();
   const el = $("workout-list");
@@ -2477,6 +2657,12 @@ function renderWorkout() {
     const cardio = isCardio(ex.name);
 
     const gl = groupLabels()[ei];
+    if (foldedDone.has(ex) && ex.sets.length && ex.sets.every(function (s) { return s.done; })) {
+      ex.sets.forEach(function (s) { if (!s.warmup) { totalCount++; doneCount++; } });   // folded sets still count
+      html += `<button type="button" class="card ex-folded" data-action="reopen" data-ex="${ei}" aria-label="${esc(ex.name)}, finished. Tap to reopen">
+        <span class="ex-tick">✓</span><span class="ex-ftxt"><b>${esc(ex.name)}</b><span>${esc(doneLine(ex))}</span></span></button>`;
+      return;
+    }
     html += `<div class="card${gl ? " grouped" : ""}">
       ${gl ? `<div class="grp-tag">${gl.kind} ${gl.tag}</div>` : ""}
       <div class="ex-head">
@@ -2552,7 +2738,6 @@ function renderWorkout() {
 
   $("workout-title").textContent = workout.name;
   $("workout-progress").textContent = doneCount + " of " + totalCount + " sets done" + (isDeload() ? " · Easier week" : "");
-  $("next-workout").textContent = workout.name;
   renderHero();
 }
 
@@ -2608,9 +2793,11 @@ $("workout-list").addEventListener("click", function (e) {
   const ex = workout.exercises[ei];
   if (!ex) return;
 
+  if (action === "reopen") { foldedDone.delete(ex); renderWorkout(); return; }
   if (action === "toggle") {
     const s = ex.sets[btn.dataset.set];
     s.done = !s.done;
+    if (s.done) foldFinished(ex);
     if (s.done) {
       if (!workout.startedAt) workout.startedAt = Date.now();
       // Ticked without typing? Log the same as last time (the faint numbers), else the bottom of the target range
@@ -2803,7 +2990,8 @@ function openSummary(entry, prs, newBadges) {
     <div class="feed-meta" style="margin:.3rem 0 .6rem">1 = rough, 5 = great. Optional.</div>
     <input class="set-input note" id="sum-note" maxlength="160" placeholder="A note about today (optional)">`;
 
-  html += `<button class="btn" data-a="summary-done">Done</button>`;
+  html += `<button class="btn" data-a="summary-done">Done</button>
+    <button class="btn ghost" data-run="gym-pic" data-i="${getHistory().length - 1}">Share picture</button>`;
   openSheet(html);
 }
 
@@ -3038,6 +3226,7 @@ function renderFeed() {
       <div class="feed-actions">
         <button class="tool" data-a="feed-again" data-i="${item.i}">Do again</button>
         <button class="tool" data-a="feed-share" data-i="${item.i}">Share</button>
+        <button class="tool" data-a="feed-pic" data-i="${item.i}">Picture</button>
         <button class="tool" data-a="feed-edit" data-i="${item.i}">Edit</button>
         <button class="tool" data-a="feed-del" data-i="${item.i}">Delete</button>
       </div>
@@ -3053,6 +3242,7 @@ $("feed-list").addEventListener("click", function (e) {
 
   if (b.dataset.a === "feed-again") { repeatWorkout(index); return; }
   if (b.dataset.a === "feed-edit") openEditor(index);
+  if (b.dataset.a === "feed-pic") { shareWorkoutPic(index); return; }
   if (b.dataset.a === "feed-share") {
     const w = getHistory()[index];
     if (w) shareOut("BTB workout", workoutShareText(w), appUrl());
@@ -3166,7 +3356,8 @@ function renderProgress() {
   const bodyweight = names.filter(function (n) { return !stats[n].weighted; })
     .sort(function (a, b) { return stats[b].best.v - stats[a].best.v; });
 
-  $("prs").innerHTML = weighted.concat(bodyweight).slice(0, 20).map(function (n) {
+  const prNames = weighted.concat(bodyweight).slice(0, 20);
+  $("prs").innerHTML = prNames.slice(0, prsAll ? 20 : 6).map(function (n) {
     const s = stats[n];
     if (s.weighted) {
       return `<div class="pr-row">
@@ -3179,8 +3370,13 @@ function renderProgress() {
       <div class="pr-name">${esc(n)}</div>
       <div class="pr-val">${s.best.v} reps</div>
     </div>`;
-  }).join("");
+  }).join("") + (prNames.length > 6 ? `<button class="btn ghost" id="prs-more" style="margin-top:.8rem">${prsAll ? "Show fewer" : "Show all " + prNames.length}</button>` : "");
 }
+$("prs").addEventListener("click", function (e) {
+  if (!e.target.closest("#prs-more")) return;
+  prsAll = !prsAll;
+  renderProgress();
+});
 
 $("chart-select").addEventListener("change", function () {
   chartExercise = $("chart-select").value;
@@ -4627,7 +4823,7 @@ if (pinIsSet()) lockApp();   // locked from the very first moment
 // BACKUP AND RESTORE
 // Your data lives in this browser only. A backup is a .json file you can keep safe.
 // =====================================================================
-const BACKUP_KEYS = ["settings", "restMap", "selectedEquipment", "goals", "workoutDates", "workoutHistory", "currentWorkout", "gear", "customExercises", "routines", "deload", "bodyLog", "exPrefs", "protein"];
+const BACKUP_KEYS = ["settings", "restMap", "selectedEquipment", "goals", "workoutDates", "workoutHistory", "currentWorkout", "gear", "customExercises", "routines", "deload", "bodyLog", "exPrefs", "protein", "runs", "runPlan", "runPrefs"];
 
 function buildBackup() {
   const data = {};
@@ -4645,7 +4841,7 @@ function applyBackup(backup) {
   }
   const d = backup.data;
 
-  const arrayKeys = ["selectedEquipment", "workoutDates", "workoutHistory", "customExercises", "routines", "bodyLog"];
+  const arrayKeys = ["selectedEquipment", "workoutDates", "workoutHistory", "customExercises", "routines", "bodyLog", "runs"];
   const objectKeys = ["settings", "restMap", "goals", "currentWorkout", "gear", "deload"];
   for (let i = 0; i < arrayKeys.length; i++) {
     if (arrayKeys[i] in d && !Array.isArray(d[arrayKeys[i]])) {
@@ -4666,6 +4862,11 @@ function applyBackup(backup) {
 
   if (d.gear && !(Array.isArray(d.gear.plates) && Array.isArray(d.gear.dumbbells) && typeof d.gear.bar === "number")) {
     return { ok: false, error: "The backup is damaged (weights)." };
+  }
+  if (d.runs && !d.runs.every(function (r) {
+    return r && typeof r.id === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.date) && typeof r.km === "number" && typeof r.secs === "number" && Array.isArray(r.route) && !!RUN_TYPES[r.type];
+  })) {
+    return { ok: false, error: "The backup is damaged (runs)." };
   }
   if (d.routines && !d.routines.every(function (r) {
     return r && typeof r.name === "string" && Array.isArray(r.exercises);
@@ -4738,6 +4939,44 @@ function restorePhotos(list) {
   });
 }
 
+// Hands a file to you. On the website that is a normal download (or the share
+// menu, for pictures). In the installed app there is no "download", so the file
+// is written to the app's own folder and the phone's share menu opens: from
+// there you can save it to Files or Drive, or send it to another app.
+function fileOut(name, blob, opts) {
+  opts = opts || {};
+  if (NATIVE) {
+    return blobToText(blob).then(function (dataUrl) {
+      return nativeCall("Filesystem", "writeFile", { path: name, data: String(dataUrl).split(",")[1], directory: "CACHE" });
+    }).then(function (res) {
+      return nativeCall("Share", "share", { title: opts.title || name, text: opts.text || "", files: [res.uri], dialogTitle: opts.title || name });
+    }).then(function () { return "shared"; }, function (err) {
+      if (err && /cancel/i.test(String(err.message || err))) return "cancelled";
+      alert("Couldn’t share the file: " + (err && err.message ? err.message : "unknown problem"));
+      return "failed";
+    });
+  }
+  // Pictures on a phone browser: the share menu, if the browser has one
+  try {
+    if (opts.share && typeof File !== "undefined" && navigator.canShare) {
+      const file = new File([blob], name, { type: blob.type });
+      if (navigator.canShare({ files: [file] })) {
+        return navigator.share({ files: [file], title: opts.title || name, text: opts.text || "" })
+          .then(function () { return "shared"; }, function () { return "cancelled"; });
+      }
+    }
+  } catch (err) { /* fall through to a download */ }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  return Promise.resolve("downloaded");
+}
+
 function exportBackup() {
   const backup = buildBackup();
   const status = $("backup-status");
@@ -4746,18 +4985,12 @@ function exportBackup() {
   return photosForBackup().catch(function () { return null; }).then(function (list) {
     if (list) backup.photos = list;
     const blob = new Blob([JSON.stringify(backup)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "btb-backup-" + dateKey(new Date()) + ".json";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-
-    save("lastBackup", Date.now());
-    save("lastBackupPhotos", list ? list.length : -1);
-    renderBackupStatus();
+    return fileOut("btb-backup-" + dateKey(new Date()) + ".json", blob, { title: "BTB backup" }).then(function (how) {
+      if (how === "failed" || how === "cancelled") { renderBackupStatus(); return; }
+      save("lastBackup", Date.now());
+      save("lastBackupPhotos", list ? list.length : -1);
+      renderBackupStatus();
+    });
   });
 }
 
@@ -4766,6 +4999,20 @@ function backupPhotoNote() {
   if (n === null) return "";
   if (n < 0) return " (photos could not be included)";
   return n === 0 ? "" : " with " + n + (n === 1 ? " photo" : " photos");
+}
+
+function BACKUP_DAYS() { return NATIVE ? 7 : 14; }
+// When to nudge you to back up (installed app): 10 am on the first day a backup is due
+function backupReminder(now) {
+  now = now || new Date();
+  if (getHistory().length + runs.length < 3) return null;
+  const last = load("lastBackup", null);
+  const due = new Date(Math.max(now.getTime(), last ? last + BACKUP_DAYS() * 86400000 : 0));
+  const at = new Date(due);
+  at.setHours(10, 0, 0, 0);
+  if (at.getTime() <= now.getTime() + 60000) at.setDate(at.getDate() + 1);
+  return { id: 2100, at: at, title: "Back up your BTB data",
+           body: "Your training history lives only on this phone. Open BTB and tap Download backup on Home." };
 }
 
 function renderBackupStatus() {
@@ -4777,11 +5024,13 @@ function renderBackupStatus() {
     : "You haven’t backed up yet.";
 
   // A gentle nudge on Home once you have some history worth protecting
-  const stale = !last || (Date.now() - last) > 14 * 86400000;
+  // The installed app holds the only copy of your data, so it asks weekly; the website fortnightly
+  const stale = !last || (Date.now() - last) > BACKUP_DAYS() * 86400000;
   $("backup-nudge").style.display = (workouts >= 3 && stale) ? "" : "none";
   $("backup-nudge-text").textContent = last
-    ? "It’s been over two weeks since your last backup."
-    : "You have " + workouts + " workouts saved only in this browser.";
+    ? "It’s been over " + (NATIVE ? "a week" : "two weeks") + " since your last backup."
+    : "You have " + workouts + " workouts saved only " + (NATIVE ? "on this phone." : "in this browser.");
+  queueReminders();
 }
 
 $("export-btn").addEventListener("click", exportBackup);
@@ -4822,7 +5071,7 @@ $("import-file").addEventListener("change", function (e) {
 let weeklyMetric = "sets";
 
 function cardioMinutes(offset, days) {
-  const b = weekBounds(offset, days);
+  const b = periodBounds(offset, days);
   let m = 0;
   getHistory().forEach(function (w) {
     if (w.date < b.start || w.date > b.end) return;
@@ -4830,7 +5079,7 @@ function cardioMinutes(offset, days) {
       if (isCardio(ex.name)) ex.sets.forEach(function (s) { m += parseFloat(s.mins) || 0; });
     });
   });
-  return Math.round(m * 10) / 10;
+  return Math.round((m + runMinutes(offset, days)) * 10) / 10;
 }
 
 function weeklySeries(metric, n) {
@@ -5009,6 +5258,7 @@ function openLibraryDetail(name) {
 function appUrl() { return location.href.split("#")[0].split("?")[0].replace(/index\.html$/, ""); }
 
 function shareOut(title, text, url) {
+  if (NATIVE) { nativeCall("Share", "share", { title: title, text: text, dialogTitle: title }).catch(function () {}); return; }
   if (navigator.share) { navigator.share({ title: title, text: text, url: url }).catch(function () {}); return; }
   const full = text + (url ? "\n" + url : "");
   if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -5757,6 +6007,7 @@ function badgeStats() {
 
   const bw = latestBodyWeight();
   const ratio = function (name) { return bw > 0 ? bestE1rm(name) / bw : 0; };
+  cardio += runs.reduce(function (n, r) { return n + r.secs / 60; }, 0);
   const reached = (goals.targets || []).filter(function (t) { try { return targetProgress(t).pct >= 1; } catch (err) { return false; } }).length;
 
   return {
@@ -5832,22 +6083,94 @@ const DAY_FULL = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Satur
 function todayIndex() { return (new Date().getDay() + 6) % 7; }   // Monday = 0
 function trainedToday() { return getWorkoutDates().indexOf(dateKey(new Date())) >= 0; }
 
-// Is today a day off? Only if you have picked training days and today is not one of them.
+// ----- shift patterns -----
+function weekdayOf(key) { return (new Date(key + "T00:00:00").getDay() + 6) % 7; }
+// Which day of your shift cycle a date is (0 = day 1), or -1 with no pattern set
+function cyclePos(key) {
+  const r = goals.rota;
+  if (!r) return -1;
+  const days = Math.round((new Date(key + "T00:00:00") - new Date(r.start + "T00:00:00")) / 86400000);
+  return ((days % r.len) + r.len) % r.len;
+}
+function isWorkDate(key) { return !!goals.rota && goals.rota.work.indexOf(cyclePos(key)) >= 0; }
+// "Work 2" or "Off 3": where a cycle day sits in its run of shifts or days off
+function cycleLabel(i) {
+  const r = goals.rota, isWork = r.work.indexOf(i) >= 0;
+  let n = 0;
+  for (let d = 0; d <= i; d++) if ((r.work.indexOf(d) >= 0) === isWork) n++;
+  return (isWork ? "Work " : "Off ") + n;
+}
+// Have you fixed which days you lift (by weekday, or by shift pattern)?
+function hasFixedDays() { return goals.rota ? goals.rota.gym.length > 0 : goals.trainDays.length > 0; }
+function isGymDate(key) {
+  if (goals.rota) return goals.rota.gym.indexOf(cyclePos(key)) >= 0;
+  return goals.trainDays.indexOf(weekdayOf(key)) >= 0;
+}
+// Roughly how many gym days a week a pattern works out as
+function rotaPerWeek() { return goals.rota ? goals.rota.gym.length * 7 / goals.rota.len : 0; }
+
+function rotaHtml() {
+  const r = goals.rota;
+  let html = `<div class="goal-group"><div class="card-label">Shift pattern (optional)</div>
+    <div class="chips"><button class="chip${r ? "" : " on"}" data-rota="off">Off</button><button class="chip${r ? " on" : ""}" data-rota="on">On</button></div>`;
+  if (!r) return html + `<div class="feed-meta goal-blurb">For shift work that doesn’t follow the week, such as 4 on, 4 off. Your gym and run days then follow your shifts.</div></div>`;
+  const chips = function (kind, list, label) {
+    let h = "";
+    for (let i = 0; i < r.len; i++) h += `<button class="chip${list.indexOf(i) >= 0 ? " on" : ""}" data-rota="${kind}" data-v="${i}">${label(i)}</button>`;
+    return h;
+  };
+  const today = dateKey(new Date());
+  html += `<div class="feed-meta goal-blurb">Your gym and run days follow this pattern, so the weekday choices are hidden while it is on.</div>
+    <div class="card-label" style="margin-top:.9rem">Days in one full cycle</div>
+    <div class="rota-len"><button class="chip" data-rota="len" data-v="-1" aria-label="One day fewer">−</button><b>${r.len}</b><button class="chip" data-rota="len" data-v="1" aria-label="One day more">+</button></div>
+    <div class="card-label" style="margin-top:.9rem">Tap the days you work</div>
+    <div class="chips">${chips("work", r.work, function (i) { return "Day " + (i + 1); })}</div>
+    ${r.work.length ? `<div class="card-label" style="margin-top:.9rem">Tap any that are night shifts</div>
+    <div class="chips">${r.work.map(function (i) { return `<button class="chip${r.nights.indexOf(i) >= 0 ? " on" : ""}" data-rota="nights" data-v="${i}">${cycleLabel(i)}</button>`; }).join("")}</div>
+    <div class="feed-meta goal-blurb">${r.nights.length ? "Sessions are set lighter on your first day off after nights, and your long run goes on a day you’re rested." : "All day shifts. Mark nights and the app plans around the lost sleep."}</div>` : ""}
+    <div class="card-label" style="margin-top:.9rem">Day 1 falls on</div>
+    <input type="date" class="inp-date" id="rota-start" value="${r.start}">
+    <div class="feed-meta goal-blurb">Any date that is the first day of the cycle. Today is <b style="color:var(--text)">${cycleLabel(cyclePos(today))}</b>.</div>
+    <div class="card-label" style="margin-top:.9rem">Gym on</div>
+    <div class="chips">${chips("gym", r.gym, cycleLabel)}</div>
+    <div class="feed-meta goal-blurb">${r.gym.length ? "About " + fmt(round1(rotaPerWeek())) + " gym sessions a week." : "None picked: train whenever suits you."}${freshestDays().length ? " You’re likely to be freshest on " + freshestDays().map(cycleLabel).join(", ") + "." : ""}</div>
+    <div class="card-label" style="margin-top:.9rem">Run on</div>
+    <div class="chips">${chips("run", r.run, cycleLabel)}</div>
+    <div class="feed-meta goal-blurb">${r.run.length ? "The running coach fits its runs onto these days." : "None picked: the running coach uses your days off, away from the gym where it can."}</div>`;
+  return html + `</div>`;
+}
+function rotaClick(action, v) {
+  if (action === "on" && !goals.rota) goals.rota = normRota({ len: 8, work: [0, 1, 2, 3], gym: [4, 5, 7], run: [], start: dateKey(new Date()) });
+  else if (action === "off") goals.rota = null;
+  else if (goals.rota && action === "len") goals.rota = normRota(Object.assign({}, goals.rota, { len: goals.rota.len + v }));
+  else if (goals.rota && (action === "work" || action === "gym" || action === "run" || action === "nights")) {
+    const list = goals.rota[action], at = list.indexOf(v);
+    if (at >= 0) list.splice(at, 1); else list.push(v);
+    goals.rota = normRota(goals.rota);
+  }
+  // Your weekly goal (used for the streak) follows the pattern
+  if (goals.rota && goals.rota.gym.length) goals.days = String(Math.max(2, Math.min(6, Math.round(rotaPerWeek()))));
+  save("goals", goals);
+  renderGoals();
+  refreshPlanAfterGoalChange();
+  refreshHome();
+}
+
+// Is today a day off? Only if you have fixed your training days and today is not one of them.
 function isRestDay() {
-  return goals.trainDays.length > 0 && goals.trainDays.indexOf(todayIndex()) < 0;
+  return hasFixedDays() && !isGymDate(dateKey(new Date()));
 }
 // "Today", or the name of your next training day
 function nextSessionLabel() {
-  if (!goals.trainDays.length) return "Today";
-  const t = todayIndex();
-  if (goals.trainDays.indexOf(t) >= 0 && !trainedToday()) return "Today";
-  for (let i = 1; i <= 7; i++) {
-    const d = (t + i) % 7;
-    if (goals.trainDays.indexOf(d) >= 0) return i === 1 ? "Tomorrow" : DAY_NAMES[d];
+  if (!hasFixedDays()) return "Today";
+  const today = dateKey(new Date());
+  if (isGymDate(today) && !trainedToday()) return "Today";
+  for (let i = 1; i <= 28; i++) {
+    const key = addDays(today, i);
+    if (isGymDate(key)) return i === 1 ? "Tomorrow" : DAY_NAMES[weekdayOf(key)] + (i >= 7 ? " " + Number(key.slice(8)) : "");
   }
   return "Today";
 }
-
 
 // =====================================================================
 // SORENESS CHECK-IN
@@ -6000,7 +6323,7 @@ function undoProtein() {
 }
 // How many of the 7 days in a week (0 = this week, 1 = last week) reached the target
 function proteinDaysHit(offset, days) {
-  const b = weekBounds(offset, days);
+  const b = periodBounds(offset, days);
   const t = proteinTarget();
   return Object.keys(proteinLog).filter(function (d) { return d >= b.start && d <= b.end && proteinOn(d) >= t; }).length;
 }
@@ -6059,7 +6382,7 @@ $("protein-card").addEventListener("click", function (e) {
 let reviewWeek = 0;   // 0 = this week so far, 1 = last week
 
 function weekStats(offset, upTo) {
-  const b = weekBounds(offset, upTo);
+  const b = periodBounds(offset, upTo);
   const history = getHistory();
   const out = { workouts: 0, sets: 0, volume: 0, cardio: cardioMinutes(offset, upTo), prs: 0 };
   const days = {};
@@ -6094,9 +6417,9 @@ function renderReview() {
   if (!el) return;
   // A week still in progress is compared with last week up to the same day,
   // so Wednesday is not judged against a full seven days.
-  const part = reviewWeek === 0 && todayIndex() < 6 ? todayIndex() + 1 : undefined;
+  const part = reviewWeek === 0 && periodDay() < periodLen() ? periodDay() : undefined;
   const now = weekStats(reviewWeek), prev = weekStats(reviewWeek + 1, part);
-  const goalDays = Math.max(1, Math.min(7, Number(goals.days) || 3));
+  const goalDays = periodGoal(), word = periodWord();
   const diff = function (a, b, fmtFn) {
     if (a === b) return `<span class="rv-d">same</span>`;
     const up = a > b;
@@ -6107,8 +6430,8 @@ function renderReview() {
   const row = function (label, value, d) { return `<div class="rv-row"><span>${label}</span><b>${value}</b>${d}</div>`; };
 
   let html = `<div class="chips" style="margin-bottom:.6rem">
-      <button class="chip${reviewWeek === 0 ? " on" : ""}" data-rv="0">This week</button>
-      <button class="chip${reviewWeek === 1 ? " on" : ""}" data-rv="1">Last week</button></div>`;
+      <button class="chip${reviewWeek === 0 ? " on" : ""}" data-rv="0">This ${word}</button>
+      <button class="chip${reviewWeek === 1 ? " on" : ""}" data-rv="1">Last ${word}</button></div>`;
   html += row("Workouts", now.workouts + " <small>/ goal " + goalDays + "</small>", diff(now.workouts, prev.workouts, n));
   html += row("Sets", n(now.sets), diff(now.sets, prev.sets, n));
   html += row("Volume", vol(now.volume), diff(now.volume, prev.volume, vol));
@@ -6116,17 +6439,17 @@ function renderReview() {
   html += row("Records", String(now.prs), diff(now.prs, prev.prs, n));
   const feelNow = avgFeel(reviewWeek), feelPrev = avgFeel(reviewWeek + 1, part);
   if (feelNow !== null) html += row("Session rating", feelNow + " <small>/ 5</small>", feelPrev === null ? `<span class="rv-d"></span>` : diff(feelNow, feelPrev, function (v) { return String(Math.round(v * 10) / 10); }));
-  if (proteinLogged()) html += row("Protein target", proteinDaysHit(reviewWeek) + " <small>/ 7 days</small>", diff(proteinDaysHit(reviewWeek), proteinDaysHit(reviewWeek + 1, part), n));
+  if (proteinLogged()) html += row("Protein target", proteinDaysHit(reviewWeek) + " <small>/ " + periodLen() + " days</small>", diff(proteinDaysHit(reviewWeek), proteinDaysHit(reviewWeek + 1, part), n));
 
   // One plain sentence on how the week went, and what to do next
   const notes = [];
-  if (!now.workouts) notes.push(reviewWeek === 0 ? "No workouts yet this week." : "No workouts logged that week.");
-  else if (now.days >= goalDays) notes.push("Weekly goal hit.");
+  if (!now.workouts) notes.push(reviewWeek === 0 ? "No workouts yet this " + word + "." : "No workouts logged that " + word + ".");
+  else if (now.days >= goalDays) notes.push(goals.rota ? "Goal hit for the cycle." : "Weekly goal hit.");
   else if (reviewWeek === 0) notes.push((goalDays - now.days) + " more " + (goalDays - now.days === 1 ? "session" : "sessions") + " to hit your goal.");
   else notes.push("You trained " + now.days + " of " + goalDays + " planned days.");
   const b = now.workouts ? behindMuscle(reviewWeek) : null;
-  if (b) notes.push("Furthest behind: " + b.label.toLowerCase() + " (" + b.sets + " of " + b.low + " sets)." + (reviewWeek === 0 ? "" : " Give it some extra this week."));
-  html += `<div class="feed-meta" style="margin-top:.7rem">${esc(notes.join(" "))} ${part ? "Changes are against last week up to " + DAY_FULL[todayIndex()] + "." : "Changes are against the week before."}</div>`;
+  if (b) notes.push("Furthest behind: " + b.label.toLowerCase() + " (" + b.sets + " of " + b.low + " sets)." + (reviewWeek === 0 ? "" : " Give it some extra this " + word + "."));
+  html += `<div class="feed-meta" style="margin-top:.7rem">${esc(notes.join(" "))} ${part ? (goals.rota ? "Changes are against last cycle up to day " + part + " of " + periodLen() + "." : "Changes are against last week up to " + DAY_FULL[todayIndex()] + ".") : "Changes are against the " + word + " before."}</div>`;
   el.innerHTML = html;
 }
 
@@ -6146,7 +6469,7 @@ let screenLock = null;
 function wantAwake() {
   if (settings.awake === "off") return false;
   const scr = document.querySelector(".screen.active");
-  return focusOn || restTimer !== null || !!(scr && scr.id === "workout");
+  return focusOn || (!NATIVE && (trk.on || trk.armed)) || restTimer !== null || !!(scr && scr.id === "workout");
 }
 function syncWake() {
   try {
@@ -6252,6 +6575,12 @@ function renderFocus() {
     ${cardio ? row("a", "minutes", s.mins, "decimal")
              : row("a", unit(), (s.weight === "" || s.weight == null) ? 0 : fmtW(s.weight), "decimal") + row("b", "reps", s.reps, "numeric")}
     <button class="btn fo-done" data-fo="done">✓ Done</button>
+    ${cardio ? "" : `<div class="fo-smart">
+      ${voiceAvailable() ? `<button class="tool" data-fo="mic">🎤 Say it</button>` : ""}
+      ${repAvailable() ? `<button class="tool${repOn ? " on" : ""}" data-fo="reps">${repOn ? "Stop counting" : "Count my reps (beta)"}</button>` : ""}
+    </div>
+    <div class="feed-meta fo-voice" id="fo-voice"></div>
+    ${repOn ? `<div class="feed-meta fo-voice" id="fo-reps">Counting: start your set. Phone on the bar, or in a pocket that moves with the lift.</div>` : ""}`}
     <div class="fo-rest" id="fo-rest"></div>
     ${more ? `<button class="link-btn" data-fo="later">Do another exercise first ›</button>` : ""}`;
   focusTick();
@@ -6274,6 +6603,10 @@ function focusRead() {
 function focusDone() {
   const r = focusRead();
   if (!r) return;
+  completeSet(r);
+}
+// Ticks a set and starts the rest (used by the Done button and by voice logging)
+function completeSet(r) {
   const ex = r.ex, s = r.s;
   if (!isCardio(ex.name) && String(s.reps).trim() === "") s.reps = String(parseInt(ex.target) || "");
   s.done = true;
@@ -6281,9 +6614,10 @@ function focusDone() {
   if (s.warmup) startRest(45);
   else { const rest = restAfterSet(r.t.ei); startRest(rest.secs, rest.label); }
   if (ex.group != null) focusPick = null;   // supersets alternate by themselves
+  foldFinished(ex);
   saveWorkout();
   renderWorkout();
-  renderFocus();
+  if (focusOn) renderFocus();
 }
 
 // The rest countdown inside focus mode (it reads the same timer as the normal rest bar)
@@ -6306,6 +6640,7 @@ function openFocus() {
   syncWake();
 }
 function closeFocus() {
+  repStop();
   focusOn = false;
   clearInterval(focusTimer);
   focusTimer = null;
@@ -6320,6 +6655,8 @@ $("focus").addEventListener("click", function (e) {
   if (a === "exit") { focusRead(); saveWorkout(); renderWorkout(); closeFocus(); return; }
   if (a === "finish") { closeFocus(); finishWorkout(); return; }
   if (a === "done") { focusDone(); return; }
+  if (a === "mic") { focusRead(); voiceLog(); return; }
+  if (a === "reps") { focusRead(); repToggle(); return; }
   if (a === "rest-skip") { stopRest(); focusTick(); return; }
   if (a === "rest-add") { restEnd += 15000; focusTick(); return; }
   if (a === "later") {
@@ -6558,7 +6895,7 @@ function updateLastSession(changes) {
 function stars(n) { n = Math.max(0, Math.min(5, Number(n) || 0)); return "★★★★★".slice(0, n) + "☆☆☆☆☆".slice(0, 5 - n); }
 // Average rating for a week (0 = this week), or null if nothing was rated
 function avgFeel(offset, days) {
-  const b = weekBounds(offset, days);
+  const b = periodBounds(offset, days);
   const list = getHistory().filter(function (w) { return w.date >= b.start && w.date <= b.end && w.feel > 0; });
   if (!list.length) return null;
   return Math.round(list.reduce(function (n, w) { return n + w.feel; }, 0) / list.length * 10) / 10;
@@ -6592,14 +6929,7 @@ function buildCsv() {
 function exportCsv() {
   if (!getHistory().length) { alert("No workouts to export yet."); return; }
   const blob = new Blob(["﻿" + buildCsv()], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "btb-history-" + dateKey(new Date()) + ".csv";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  fileOut("btb-history-" + dateKey(new Date()) + ".csv", blob, { title: "BTB history" });
 }
 $("csv-btn").addEventListener("click", exportCsv);
 
@@ -6649,7 +6979,2084 @@ function maybeWelcome() {
   else openWelcome();
 }
 
+// =====================================================================
+// RUN: GPS tracking for runs, rides and walks, plus a running coach.
+//
+// How it fits together:
+//   - "runs" is the list of finished runs (distance in km, time in seconds,
+//     and a slimmed-down copy of the route).
+//   - "trk" is the run happening right now. GPS points come in through
+//     trackPoint(), a once-a-second clock calls trackTick(), and both ask
+//     trackEvents() whether anything should be said out loud.
+//   - "runPlan" is the coach. Only your choices are saved (goal, runs per
+//     week, 5K time); the weeks are worked out fresh each time by
+//     planWeeks(), so changing your 5K time updates every pace at once.
+//
+// A web app only receives GPS while the screen is on, so the screen is
+// kept awake during a run and there is a lock to stop accidental taps.
+// =====================================================================
+
+const RUN_TYPES = { run: { label: "Run", verb: "run", max: 30 }, ride: { label: "Ride", verb: "ride", max: 90 }, walk: { label: "Walk", verb: "walk", max: 15 } };
+
+function saveRuns() { save("runs", runs); }
+function saveRunPrefs() { save("runPrefs", runPrefs); }
+function saveRunPlan() { if (runPlan) save("runPlan", runPlan); else { try { localStorage.removeItem("runPlan"); } catch (err) {} } }
+
+// ---------- numbers and words ----------
+// Distance between two GPS points in km (the "haversine" formula)
+function haversine(lat1, lng1, lat2, lng2) {
+  const R = 6371, rad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * rad, dLng = (lng2 - lng1) * rad;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+// 3725 -> "1:02:05", 345 -> "5:45"
+function runClock(secs) {
+  const s = Math.max(0, Math.round(secs));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  return (h ? h + ":" + String(m).padStart(2, "0") : String(m)) + ":" + String(r).padStart(2, "0");
+}
+// "28:30" or "1:02:05" -> seconds (0 if it can't be read)
+function parseClock(text) {
+  const parts = String(text || "").trim().split(":").map(function (p) { return parseFloat(p.replace(",", ".")); });
+  if (!parts.length || parts.length > 3 || parts.some(function (n) { return !isFinite(n) || n < 0; })) return 0;
+  return Math.round(parts.reduce(function (total, n) { return total * 60 + n; }, 0) * (parts.length === 1 ? 60 : 1));
+}
+// Pace is stored as seconds per km and shown per km or per mile to match your units
+function paceStr(secPerKm) {
+  if (!(secPerKm > 0) || !isFinite(secPerKm)) return "–:––";
+  return runClock(secPerKm / distToDisp(1));
+}
+function paceUnit() { return "/" + distUnit(); }
+function speedStr(km, secs) { return secs > 0 ? round1(distToDisp(km) / (secs / 3600)) + (distUnit() === "mi" ? " mph" : " km/h") : "–"; }
+function dist2(km) { return (Math.round(distToDisp(km) * 100) / 100).toFixed(2); }
+
+// Spoken versions
+function sayDur(secs) {
+  const s = Math.round(secs), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  const bits = [];
+  if (h) bits.push(h + (h === 1 ? " hour" : " hours"));
+  if (m) bits.push(m + (m === 1 ? " minute" : " minutes"));
+  if (r || !bits.length) bits.push(r + (r === 1 ? " second" : " seconds"));
+  return bits.join(" ");
+}
+function sayUnit(n) { const one = distUnit() === "mi" ? "mile" : "kilometre"; return fmt(n) + " " + one + (n === 1 ? "" : "s"); }
+function sayPace(secPerKm) {
+  const s = Math.round(secPerKm / distToDisp(1));
+  return Math.floor(s / 60) + " " + String(s % 60).padStart(2, "0") + " per " + (distUnit() === "mi" ? "mile" : "kilometre");
+}
+function sayKm(km) { return km < 1 ? Math.round(km * 1000) + " metres" : sayUnit(Math.round(distToDisp(km) * 10) / 10); }
+
+// Riegel's formula: predicts a time over a new distance from a known one
+function riegel(secs, fromKm, toKm) { return secs * Math.pow(toKm / fromKm, 1.06); }
+
+// ---------- the route, kept small ----------
+// At most 250 points, each stored as a whole number of 1/100000ths of a degree
+// (about a metre) and as the change from the point before, so a run takes ~2 KB.
+function encodeRoute(pts) {
+  if (!pts.length) return [];
+  const step = Math.max(1, Math.ceil(pts.length / 250));
+  const keep = pts.filter(function (p, i) { return i % step === 0 || i === pts.length - 1; });
+  const out = [];
+  let pLat = 0, pLng = 0;
+  keep.forEach(function (p) {
+    const lat = Math.round(p[0] * 1e5), lng = Math.round(p[1] * 1e5);
+    out.push(lat - pLat, lng - pLng);
+    pLat = lat; pLng = lng;
+  });
+  return out;
+}
+// The clock time (seconds from the start) of each stored route point, thinned the same way
+function encodeTimes(times) {
+  if (!times.length) return [];
+  const step = Math.max(1, Math.ceil(times.length / 250));
+  const out = [];
+  let prev = 0;
+  times.forEach(function (t, i) { if (i % step === 0 || i === times.length - 1) { out.push(t - prev); prev = t; } });
+  return out;
+}
+function decodeTimes(enc) {
+  let t = 0;
+  return (enc || []).map(function (d) { t += d; return t; });
+}
+
+// ----- best efforts: your fastest 1 km, 5 km, 10 km and half marathon inside a run -----
+const BEST_DISTS = [["1", 1, "1 km"], ["5", 5, "5 km"], ["10", 10, "10 km"], ["21", 21.0975, "Half marathon"]];
+// marks = [[km so far, seconds so far], ...]. For each distance, slides a window along
+// the run and keeps the quickest. Gives back e.g. { "1": 287, "5": 1502 }.
+function bestEfforts(marks) {
+  const out = {};
+  if (!marks || marks.length < 2) return out;
+  const total = marks[marks.length - 1][0];
+  BEST_DISTS.forEach(function (bd) {
+    const D = bd[1];
+    if (total < D) return;
+    let best = Infinity, i = 0;
+    for (let j = 1; j < marks.length; j++) {
+      const from = marks[j][0] - D;
+      if (from < 0) continue;
+      while (i + 1 < marks.length && marks[i + 1][0] <= from) i++;
+      const a = marks[i], b = marks[Math.min(i + 1, marks.length - 1)];
+      const t0 = b[0] > a[0] ? a[1] + (b[1] - a[1]) * (from - a[0]) / (b[0] - a[0]) : a[1];   // the time you passed "from"
+      best = Math.min(best, marks[j][1] - t0);
+    }
+    if (isFinite(best) && best > 0) out[bd[0]] = Math.round(best);
+  });
+  return out;
+}
+// Your quickest for each distance over every run (not rides or walks)
+function runBests(exceptId) {
+  const out = {};
+  runs.forEach(function (r) {
+    if (r.type !== "run" || !r.best || r.id === exceptId) return;
+    Object.keys(r.best).forEach(function (k) { if (!out[k] || r.best[k] < out[k].secs) out[k] = { secs: r.best[k], date: r.date, id: r.id }; });
+  });
+  return out;
+}
+
+function decodeRoute(enc) {
+  const out = [];
+  let lat = 0, lng = 0;
+  for (let i = 0; i + 1 < (enc || []).length; i += 2) {
+    lat += enc[i]; lng += enc[i + 1];
+    out.push([lat / 1e5, lng / 1e5]);
+  }
+  return out;
+}
+
+// ---------- the map ----------
+// Street map squares ("tiles") come from OpenStreetMap when you're online.
+// The route line is drawn by the app itself, so it shows even with no signal.
+const MAP_W = 480, MAP_H = 230;
+function mapProj(lat, lng, z) {
+  const size = 256 * Math.pow(2, z), r = lat * Math.PI / 180;
+  return [(lng + 180) / 360 * size, (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * size];
+}
+// Picks the closest zoom that still fits the whole route in the middle of the box
+function mapView(pts) {
+  let z = 17, a, b;
+  const lats = pts.map(function (p) { return p[0]; }), lngs = pts.map(function (p) { return p[1]; });
+  const n = Math.max.apply(null, lats), s = Math.min.apply(null, lats), w = Math.min.apply(null, lngs), e = Math.max.apply(null, lngs);
+  for (; z > 2; z--) {
+    a = mapProj(n, w, z); b = mapProj(s, e, z);
+    if (b[0] - a[0] <= 250 && b[1] - a[1] <= MAP_H - 60) break;
+  }
+  a = mapProj(n, w, z); b = mapProj(s, e, z);
+  return { z: z, x0: (a[0] + b[0]) / 2 - MAP_W / 2, y0: (a[1] + b[1]) / 2 - MAP_H / 2 };
+}
+function mapInView(p, v) {
+  const q = mapProj(p[0], p[1], v.z), x = q[0] - v.x0, y = q[1] - v.y0;
+  return x > MAP_W / 2 - 130 && x < MAP_W / 2 + 130 && y > 25 && y < MAP_H - 25;
+}
+function mapTiles(v) {
+  let html = "";
+  const max = Math.pow(2, v.z);
+  for (let tx = Math.floor(v.x0 / 256); tx * 256 < v.x0 + MAP_W; tx++) {
+    for (let ty = Math.floor(v.y0 / 256); ty * 256 < v.y0 + MAP_H; ty++) {
+      if (ty < 0 || ty >= max) continue;
+      const wx = ((tx % max) + max) % max;
+      html += `<img class="map-tile" alt="" draggable="false" src="https://tile.openstreetmap.org/${v.z}/${wx}/${ty}.png" style="left:${Math.round(tx * 256 - v.x0)}px;top:${Math.round(ty * 256 - v.y0)}px">`;
+    }
+  }
+  return html;
+}
+function mapLine(pts, v) {
+  if (!pts.length) return "";
+  const xy = pts.map(function (p) { const q = mapProj(p[0], p[1], v.z); return [Math.round((q[0] - v.x0) * 10) / 10, Math.round((q[1] - v.y0) * 10) / 10]; });
+  const first = xy[0], last = xy[xy.length - 1];
+  return `<svg class="map-line" viewBox="0 0 ${MAP_W} ${MAP_H}" width="${MAP_W}" height="${MAP_H}">
+    <polyline points="${xy.map(function (q) { return q.join(","); }).join(" ")}"/>
+    <circle class="m-start" cx="${first[0]}" cy="${first[1]}" r="5"/><circle class="m-end" cx="${last[0]}" cy="${last[1]}" r="6"/></svg>`;
+}
+function mapHtml(pts) {
+  if (!pts.length) return `<div class="map empty"><span>The route appears here once GPS has a fix.</span></div>`;
+  const v = mapView(pts);
+  return `<div class="map"><div class="map-in"><div class="map-tiles">${mapTiles(v)}</div>${mapLine(pts, v)}</div><span class="map-credit">© OpenStreetMap</span></div>`;
+}
+// A tiny outline of the route for the list of runs (no street map)
+function routeThumb(pts) {
+  if (pts.length < 2) return `<svg class="thumb" viewBox="0 0 40 40"></svg>`;
+  const v = mapView(pts);
+  const xy = pts.map(function (p) { return mapProj(p[0], p[1], v.z); });
+  const xs = xy.map(function (q) { return q[0]; }), ys = xy.map(function (q) { return q[1]; });
+  const x0 = Math.min.apply(null, xs), y0 = Math.min.apply(null, ys);
+  const span = Math.max(Math.max.apply(null, xs) - x0, Math.max.apply(null, ys) - y0, 1), k = 32 / span;
+  const ox = (40 - (Math.max.apply(null, xs) - x0) * k) / 2, oy = (40 - (Math.max.apply(null, ys) - y0) * k) / 2;
+  return `<svg class="thumb" viewBox="0 0 40 40"><polyline points="${xy.map(function (q) { return round1(ox + (q[0] - x0) * k) + "," + round1(oy + (q[1] - y0) * k); }).join(" ")}"/></svg>`;
+}
+
+// ---------- the voice ----------
+function runSay(text) {
+  if (!text) return;
+  trk.said.push(text);
+  trk.lastSaid = text;
+  if (runPrefs.voice !== "on") return;
+  if (NATIVE) {                      // the phone's own voice: works with the screen off
+    nativeCall("TextToSpeech", "speak", { text: text, lang: "en-GB", rate: 1.0, pitch: 1.0, volume: 1.0, queueStrategy: 1 })
+      .catch(function (err) { nativeNote = "Voice: " + (err && err.message ? err.message : "not available"); });
+    return;
+  }
+  try {
+    if (typeof speechSynthesis === "undefined" || typeof SpeechSynthesisUtterance === "undefined") return;
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1; u.lang = "en-GB";
+    speechSynthesis.speak(u);
+  } catch (err) { /* the voice is optional */ }
+}
+function runAlert() { ivBeep(880, 250); ivBuzz([250, 120, 250, 120, 400]); }
+
+// ---------- the run in progress ----------
+function newTrack() {
+  return { armed: false, on: false, paused: false, locked: false, type: "run", title: "", goal: "free", goalKm: 0, goalSecs: 0, outBack: false,
+           startMs: 0, pausedMs: 0, pauseAt: 0, dist: 0, pts: [], last: null, acc: null, gps: "wait", gaps: 0,
+           nextCue: 0, splits: [], splitAt: 0, turned: false, goalDone: false,
+           steps: null, stepIdx: 0, stepKm0: 0, stepSecs0: 0, session: null,
+           auto: false, lastMove: 0, ptT: [], marks: [], ghost: null, ghostOff: 0,
+           said: [], lastSaid: "", watchId: null, timer: null, view: null, lastSave: 0 };
+}
+trk = newTrack();
+
+function trackElapsed(now) {
+  if (!trk.on) return 0;
+  return Math.max(0, (now - trk.startMs - trk.pausedMs - (trk.paused ? now - trk.pauseAt : 0)) / 1000);
+}
+function cueEvery() { return runPrefs.cues === "off" ? 0 : (parseFloat(runPrefs.cues) || 1); }
+
+// What is the whole outing meant to add up to? Used for the halfway turn-around.
+function trackTarget() {
+  if (trk.steps) {
+    const timed = trk.steps.some(function (s) { return !s.km; });
+    return timed ? { secs: sessionSecs(trk.steps) } : { km: trk.steps.reduce(function (n, s) { return n + s.km; }, 0) };
+  }
+  if (trk.goal === "dist" && trk.goalKm > 0) return { km: trk.goalKm };
+  if (trk.goal === "time" && trk.goalSecs > 0) return { secs: trk.goalSecs };
+  return null;
+}
+
+function stepLabel(s) {
+  const what = { warm: "Warm up", cool: "Cool down", fast: "Fast", recover: "Recover", tempo: "Tempo", easy: "Easy", long: "Long run", race: "Race pace" }[s.kind] || "Run";
+  return what + (s.of ? " " + s.n + " of " + s.of : "");
+}
+function stepSay(s) {
+  const size = s.km ? sayKm(s.km) : sayDur(s.secs);
+  const how = { warm: "Warm up, easy jog for " + size, cool: "Cool down, easy jog for " + size, recover: "Recover. Walk or jog for " + size,
+                fast: "Fast" + (s.of ? " " + s.n + " of " + s.of : "") + ", " + size, tempo: "Tempo, comfortably hard, for " + size,
+                easy: "Easy run, " + size, long: "Long run, " + size, race: "Race pace, " + size }[s.kind] || size;
+  return how + (s.pace && s.kind !== "warm" && s.kind !== "cool" && s.kind !== "recover" ? ". Target pace " + sayPace((s.pace[0] + s.pace[1]) / 2) : "") + ".";
+}
+function stepLeft(now) {
+  const s = trk.steps && trk.steps[trk.stepIdx];
+  if (!s) return null;
+  return s.km ? { km: Math.max(0, s.km - (trk.dist - trk.stepKm0)) } : { secs: Math.max(0, s.secs - (trackElapsed(now) - trk.stepSecs0)) };
+}
+
+// Looks at where the run has got to and says whatever is due. Called on every
+// GPS point and every second. Each thing is said once: the flags remember.
+function trackEvents(now) {
+  if (!trk.on || trk.paused) return;
+
+  // 0. Auto-pause: no real movement for 10 seconds stops the clock, until you move again.
+  //    Not during a timed part of a coach session (a standing recovery is still a recovery).
+  const stepNow = trk.steps && trk.steps[trk.stepIdx];
+  if (runPrefs.autoPause !== "off" && trk.dist > 0.03 && trk.lastMove && now - trk.lastMove > 10000 && !(stepNow && !stepNow.km)) {
+    trk.paused = true; trk.auto = true;
+    trk.pauseAt = Math.min(now, trk.lastMove + 3000);     // the clock stops from just after you last moved
+    runSay("Auto paused.");
+    trackShell();
+    return;
+  }
+  const secs = trackElapsed(now);
+
+  // 1. Coach session: move on to the next part
+  while (trk.steps && trk.stepIdx < trk.steps.length) {
+    const left = stepLeft(now);
+    if ((left.km !== undefined ? left.km : left.secs) > 0.0005) break;
+    trk.stepIdx++;
+    trk.stepKm0 = trk.dist; trk.stepSecs0 = secs;
+    if (trk.stepIdx < trk.steps.length) { ivBeep(660, 200); ivBuzz([200, 100, 200]); runSay(stepSay(trk.steps[trk.stepIdx])); }
+    else if (!trk.goalDone) { trk.goalDone = true; runAlert(); runSay("Session complete. " + sayKm(trk.dist) + " in " + sayDur(secs) + ". Well done."); }
+  }
+
+  // 2. Halfway on an out-and-back
+  const target = trackTarget();
+  if (trk.outBack && !trk.turned && target) {
+    const atHalf = target.km ? trk.dist >= target.km / 2 : secs >= target.secs / 2;
+    if (atHalf) { trk.turned = true; runAlert(); runSay("Halfway. Turn around now and head back."); }
+  }
+
+  // 3. Every kilometre or mile (or half)
+  const every = cueEvery(), unitDist = distToDisp(trk.dist);
+  while (unitDist >= trk.splits.length + 1) {            // a full unit: remember how long it took
+    trk.splits.push(Math.round(secs - trk.splitAt));
+    trk.splitAt = secs;
+  }
+  if (every && unitDist >= trk.nextCue) {
+    const mark = trk.nextCue;
+    trk.nextCue = Math.round((Math.floor(unitDist / every) * every + every) * 100) / 100;
+    let line = sayUnit(mark) + ". Time " + sayDur(secs) + ". ";
+    if (trk.type === "ride") line += "Average speed " + speedStr(trk.dist, secs).replace("km/h", "kilometres an hour").replace("mph", "miles an hour") + ".";
+    else {
+      line += "Average pace " + sayPace(secs / trk.dist) + ".";
+      const gap = ghostGap(now);
+      if (gap !== null) line += " " + ghostWords(gap);
+      const lastSplit = trk.splits.length && mark === trk.splits.length ? trk.splits[trk.splits.length - 1] * distToDisp(1) : 0;   // seconds per km
+      const step = trk.steps && trk.steps[trk.stepIdx];
+      if (lastSplit && step && step.pace) {
+        if ((step.kind === "easy" || step.kind === "long") && lastSplit < step.pace[0] * 0.97) line += " That is faster than easy pace. Ease back to around " + sayPace(step.pace[0]) + ".";
+        else if ((step.kind === "tempo" || step.kind === "race") && lastSplit > step.pace[1] * 1.04) line += " A little behind target. Aim for " + sayPace(step.pace[1]) + ".";
+        else if ((step.kind === "tempo" || step.kind === "race") && lastSplit < step.pace[0] * 0.96) line += " Faster than target. Hold back a little.";
+        else if (step.kind !== "fast" && step.kind !== "recover" && step.kind !== "warm" && step.kind !== "cool") line += " On target.";
+      }
+    }
+    runSay(line);
+  }
+
+  // 4. Your own distance or time goal
+  if (!trk.steps && !trk.goalDone && target) {
+    if (target.km ? trk.dist >= target.km : secs >= target.secs) {
+      trk.goalDone = true; runAlert();
+      runSay("Goal reached. " + sayKm(trk.dist) + " in " + sayDur(secs) + ".");
+    }
+  }
+}
+
+// One GPS reading. acc = how sure the phone is, in metres (smaller is better).
+function trackPoint(lat, lng, acc, now) {
+  if (!trk.armed && !trk.on) return;
+  trk.acc = acc;
+  if (!(acc <= 35)) { trk.gps = "weak"; return; }       // too vague to trust
+  trk.gps = "ok";
+  if (!trk.on) { trk.last = { lat: lat, lng: lng, t: now }; if (!trk.pts.length) trk.pts = [[lat, lng]]; else trk.pts[0] = [lat, lng]; return; }
+  if (trk.paused && trk.auto) {
+    // Auto-paused: a clear move of 8 m or more (not GPS wobble) starts the clock again
+    if (!(trk.last && acc <= 20 && haversine(trk.last.lat, trk.last.lng, lat, lng) >= 0.008)) return;
+    trackResume(now);
+  }
+  if (trk.paused || !trk.last) { trk.last = { lat: lat, lng: lng, t: now }; return; }
+
+  const d = haversine(trk.last.lat, trk.last.lng, lat, lng);
+  const dt = (now - trk.last.t) / 1000;
+  if (d < 0.004) return;                                   // under 4 m: standing still, or GPS wobble
+  if (dt > 0 && d / dt * 3600 > RUN_TYPES[trk.type].max) { // faster than you could be going: a GPS jump
+    if (dt > 15) trk.last = { lat: lat, lng: lng, t: now };  // it has stayed "jumped" for a while, so carry on from here
+    return;
+  }
+  trk.dist += d;
+  trk.pts.push([lat, lng]);
+  trk.ptT.push(Math.round((now - trk.startMs) / 1000));                    // clock time of each point, for exporting
+  trk.lastMove = now;
+  ghostCheck(lat, lng);
+  const lastMark = trk.marks[trk.marks.length - 1];
+  if (!lastMark || trk.dist - lastMark[0] >= 0.02) trk.marks.push([Math.round(trk.dist * 1000) / 1000, Math.round(trackElapsed(now) * 10) / 10]);
+  trk.last = { lat: lat, lng: lng, t: now };
+  trackEvents(now);
+}
+
+// One reading from either kind of GPS. Also runs the clock-based checks, because
+// with the phone locked the once-a-second timer can be slowed down by Android.
+function gpsReading(lat, lng, acc) {
+  const now = Date.now();
+  trackPoint(lat, lng, acc, now);
+  if (trk.on) { trackEvents(now); trackAutosave(now); }
+  if (document.visibilityState !== "hidden") trackPaint(now);
+}
+function trackAutosave(now) {
+  if (trk.on && now - trk.lastSave > 15000) { trk.lastSave = now; save("runLive", trackRecord(now)); }   // in case the app is closed mid-run
+}
+
+function gpsStart() {
+  if (NATIVE) {
+    // Android 13+ needs permission to show the "BTB is tracking" notification
+    nativeCall("LocalNotifications", "requestPermissions", {}).catch(function () {});
+    trk.watchId = nativeCall("BackgroundGeolocation", "addWatcher",
+      { backgroundTitle: "BTB is tracking", backgroundMessage: "Recording your " + RUN_TYPES[trk.type].verb + ". Open BTB to pause or finish.",
+        requestPermissions: true, stale: false, distanceFilter: 0 },
+      function (loc, err) {
+        if (err) { trk.gps = err.code === "NOT_AUTHORIZED" ? "denied" : "weak"; nativeNote = "GPS: " + (err.message || err.code || "error"); trackPaint(); return; }
+        if (loc) gpsReading(loc.latitude, loc.longitude, loc.accuracy);
+      });
+    trk.watchId.catch(function (err) { trk.gps = "none"; nativeNote = "GPS: " + (err && err.message ? err.message : "could not start"); trackPaint(); });
+    return;
+  }
+  if (typeof navigator === "undefined" || !navigator.geolocation) { trk.gps = "none"; return; }
+  try {
+    trk.watchId = navigator.geolocation.watchPosition(
+      function (pos) { gpsReading(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy); },
+      function (err) { trk.gps = err && err.code === 1 ? "denied" : "weak"; trackPaint(); },
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+  } catch (err) { trk.gps = "none"; }
+}
+function gpsStop() {
+  if (NATIVE) {
+    const w = trk.watchId;
+    if (w && w.then) w.then(function (id) { return nativeCall("BackgroundGeolocation", "removeWatcher", { id: id }); }).catch(function () {});
+    nativeCall("TextToSpeech", "stop", {}).catch(function () {});
+    trk.watchId = null;
+    return;
+  }
+  try { if (trk.watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(trk.watchId); } catch (err) {}
+  trk.watchId = null;
+}
+function gpsText() {
+  return { wait: "Finding GPS…", ok: "GPS ready" + (trk.acc ? " (±" + Math.round(trk.acc) + " m)" : ""), weak: "Weak GPS signal. Move into the open.",
+           denied: NATIVE ? "Location is blocked. Open your phone’s Settings, Apps, BTB, Permissions and allow Location." : "Location is blocked. Allow location for this site in your browser settings.",
+           none: NATIVE ? "The phone’s GPS service did not start." : "This browser has no GPS. You can still log a run by hand." }[trk.gps]
+         + (NATIVE && nativeNote ? " (" + nativeNote + ")" : "");
+}
+
+// Step 1: open the run screen and start listening for GPS. The clock has not started.
+function trackArm(opts) {
+  opts = opts || {};
+  trk = newTrack();
+  trk.armed = true;
+  trk.type = opts.steps ? "run" : runPrefs.type;
+  trk.steps = opts.steps || null;
+  trk.session = opts.session || null;
+  trk.title = opts.title || RUN_TYPES[trk.type].label;
+  trk.goal = opts.steps ? "plan" : runPrefs.goal;
+  trk.goalKm = runPrefs.km;
+  trk.goalSecs = runPrefs.mins * 60;
+  trk.outBack = !!runPrefs.outBack;
+  $("track").classList.add("show");
+  trackShell();
+  gpsStart();
+  syncWake();
+}
+// Step 2: the clock starts
+function trackGo(now) {
+  if (!trk.armed || trk.on) return;
+  trk.on = true; trk.armed = false;
+  trk.startMs = now;
+  trk.nextCue = cueEvery();
+  trk.lastMove = now;
+  trk.ptT = trk.pts.map(function () { return 0; });
+  trk.marks = [[0, 0]];
+  if (trk.last) trk.last.t = now;
+  trk.timer = setInterval(function () { trackTick(Date.now()); }, 1000);
+  ivBeep(880, 200);
+  // Started somewhere you have run from before? Race your best run from here.
+  if (!trk.steps && runPrefs.ghost !== "off" && trk.last) trk.ghost = ghostFor(trk.last.lat, trk.last.lng, trk.type);
+  runSay(trk.steps ? trk.title + ". " + stepSay(trk.steps[0])
+    : "Starting " + RUN_TYPES[trk.type].verb + "." + (trk.ghost ? " Racing your best from here: " + sayKm(trk.ghost.total) + " in " + sayDur(Math.round(trk.ghost.secs)) + "." : ""));
+  trackShell();
+}
+function trackPause(now) { if (trk.on && !trk.paused) { trk.paused = true; trk.auto = false; trk.pauseAt = now; runSay("Paused."); trackShell(); } }
+function trackResume(now) {
+  if (!trk.on || !trk.paused) return;
+  trk.pausedMs += now - trk.pauseAt; trk.paused = false; trk.auto = false; trk.last = null; trk.lastMove = now;
+  runSay("Resumed."); trackShell();
+}
+function trackTick(now) {
+  trackEvents(now);
+  trackPaint(now);
+  trackAutosave(now);
+}
+
+// The finished run, as it is stored
+function trackRecord(now) {
+  const secs = Math.round(trackElapsed(now));
+  return { id: "r" + trk.startMs, date: dateKey(new Date(trk.startMs)), type: trk.type, title: trk.title,
+           km: Math.round(trk.dist * 1000) / 1000, secs: secs, splits: trk.splits.slice(), unit: distUnit(),
+           route: encodeRoute(trk.pts), rt: encodeTimes(trk.ptT), best: bestEfforts(trk.marks), vs: ghostResult(trk.marks), session: trk.session, gaps: trk.gaps };
+}
+function trackClose() {
+  gpsStop();
+  if (trk.timer !== null) clearInterval(trk.timer);
+  try { if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel(); } catch (err) {}
+  trk = newTrack();
+  $("track").classList.remove("show");
+  try { localStorage.removeItem("runLive"); } catch (err) {}
+  syncWake();
+}
+function trackFinish(now) {
+  if (!trk.on) { trackClose(); return null; }
+  if (trk.dist < 0.05 && !confirm("Hardly any distance was recorded. Save this " + RUN_TYPES[trk.type].verb + " anyway?")) { trackClose(); renderRun(); return null; }
+  const rec = trackRecord(now);
+  trackClose();
+  storeRun(rec);
+  openRunDetail(rec.id, true);
+  return rec;
+}
+
+// Adds a run to your records and tells the rest of the app
+function storeRun(rec) {
+  if (rec.type === "run" && rec.best) {                       // which of this run's efforts beat your records?
+    const old = runBests(rec.id);
+    rec.pb = Object.keys(rec.best).filter(function (k) { return !old[k] || rec.best[k] < old[k].secs; });
+  }
+  runs.push(rec);
+  runs.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  saveRuns();
+  addWorkoutDate(rec.date);
+  if (runPlan && rec.session) { runPlan.done[rec.session] = rec.id; }
+  if (runPlan && rec.type === "run" && rec.km >= 3) {         // a quicker run than the plan expects? offer faster paces
+    const est = Math.round(riegel(rec.secs, rec.km, 5));
+    if (est < runPlan.t5 * 0.98) runPlan.suggest = est;
+  }
+  saveRunPlan();
+  refreshHome();
+  renderRun();
+}
+
+// ---------- the live screen ----------
+function trackShell() {
+  const el = $("track-body");
+  const ride = trk.type === "ride";
+  if (trk.armed) {
+    el.innerHTML = `<div class="fo-top"><div><div class="card-label">${esc(RUN_TYPES[trk.type].label)}</div><div class="big">${esc(trk.title)}</div></div>
+        <button class="link-btn" data-tk="cancel">Cancel</button></div>
+      <div class="tk-gps" id="tk-gps"></div>
+      <div id="tk-map">${mapHtml(trk.pts)}</div>
+      ${trk.steps ? `<div class="tk-plan">${trk.steps.map(function (s) { return `<div class="pr-row"><span>${stepLabel(s)}</span><span class="feed-meta">${s.km ? fmtKm(s.km) : runClock(s.secs)}${s.pace ? " · " + paceStr(s.pace[0]) + "–" + paceStr(s.pace[1]) + paceUnit() : ""}</span></div>`; }).join("")}</div>` : ""}
+      <div class="feed-meta">${NATIVE
+        ? "You can lock your phone and put it away: BTB keeps tracking and talking. A notification shows while it records."
+        : "Keep the screen on while you " + RUN_TYPES[trk.type].verb + ": GPS stops if the phone is locked. BTB keeps it awake for you, and Lock stops accidental taps."}${trk.outBack ? " You’ll be told when to turn around." : ""}</div>
+      <button class="btn fo-done" data-tk="go">Start</button>`;
+    trackPaint(Date.now());
+    return;
+  }
+  el.innerHTML = `<div class="fo-top"><div><div class="card-label" id="tk-gps"></div><div class="big">${esc(trk.title)}</div></div>
+      <button class="tool" data-tk="lock">Lock</button></div>
+    <div class="tk-main"><b id="tk-dist">0.00</b><span>${distUnit()}</span></div>
+    <div class="tk-stats">
+      <div><b id="tk-time">0:00</b><span>Time</span></div>
+      <div><b id="tk-pace">–</b><span>${ride ? "Avg speed" : "Avg pace " + paceUnit()}</span></div>
+      <div><b id="tk-split">–</b><span>${ride ? "This " + distUnit() : "This " + distUnit() + " " + paceUnit()}</span></div>
+    </div>
+    <div class="tk-step" id="tk-step"></div>
+    <div class="tk-ghost" id="tk-ghost"></div>
+    <div id="tk-map">${mapHtml(trk.pts)}</div>
+    <div class="feed-meta tk-said" id="tk-said"></div>
+    <div class="btn-row" id="tk-btns">${trk.paused
+      ? `<button class="btn" data-tk="resume">Resume</button><button class="btn ghost" data-tk="finish">Finish</button>`
+      : `<button class="btn ghost" data-tk="pause">Pause</button>`}</div>
+    ${trk.paused && trk.auto ? `<div class="feed-meta" style="text-align:center">Auto-paused. Start moving and the clock carries on.</div>` : ""}
+    ${trk.paused ? `<button class="link-btn" data-tk="discard">Discard this ${RUN_TYPES[trk.type].verb}</button>` : ""}
+    <div class="tk-lock${trk.locked ? " show" : ""}" id="tk-lock"><div><b>Locked</b><span>Press and hold to unlock</span><button class="btn" id="tk-unlock">Hold to unlock</button></div></div>`;
+  trk.view = null;
+  trackPaint(Date.now());
+}
+function fmtKm(km) { return km < 1 ? Math.round(km * 1000) + " m" : fmt(Math.round(distToDisp(km) * 100) / 100) + " " + distUnit(); }
+
+// Updates the numbers without rebuilding the screen (so the map doesn't flicker)
+function trackPaint(now) {
+  if (!trk.armed && !trk.on) return;
+  now = now || Date.now();
+  $("tk-gps").textContent = gpsText();
+  if (trk.armed) {
+    $("tk-map").innerHTML = mapHtml(trk.pts);
+    return;
+  }
+  const secs = trackElapsed(now);
+  $("tk-dist").textContent = dist2(trk.dist);
+  $("tk-time").textContent = runClock(secs);
+  const splitKm = trk.dist - trk.splits.length / distToDisp(1), splitSecs = secs - trk.splitAt;
+  if (trk.type === "ride") {
+    $("tk-pace").textContent = trk.dist > 0.02 ? speedStr(trk.dist, secs) : "–";
+    $("tk-split").textContent = splitKm > 0.02 ? speedStr(splitKm, splitSecs) : "–";
+  } else {
+    $("tk-pace").textContent = trk.dist > 0.02 ? paceStr(secs / trk.dist) : "–";
+    $("tk-split").textContent = splitKm > 0.02 ? paceStr(splitSecs / splitKm) : "–";
+  }
+
+  // What you're doing now and how far is left
+  let stepHtml = "";
+  const target = trackTarget();
+  if (trk.steps) {
+    const s = trk.steps[trk.stepIdx], left = stepLeft(now);
+    stepHtml = s ? `<b>${stepLabel(s)}</b><span>${left.km !== undefined ? fmtKm(left.km) : runClock(left.secs)} left${s.pace ? " · target " + paceStr(s.pace[0]) + "–" + paceStr(s.pace[1]) + paceUnit() : ""}</span>`
+                 : `<b>Session complete</b><span>Tap Pause, then Finish, when you’re done.</span>`;
+  } else if (target) {
+    const pct = Math.min(100, Math.round((target.km ? trk.dist / target.km : secs / target.secs) * 100));
+    stepHtml = `<b>${trk.goalDone ? "Goal reached" : target.km ? fmtKm(Math.max(0, target.km - trk.dist)) + " to go" : runClock(Math.max(0, target.secs - secs)) + " to go"}</b>
+      <div class="obj-bar"><i style="width:${pct}%"></i></div>`;
+  }
+  if (trk.outBack && target) stepHtml += `<span class="tk-turn${trk.turned ? " on" : ""}">${trk.turned ? "Turned: heading back" : "Turn around at " + (target.km ? fmtKm(target.km / 2) : runClock(target.secs / 2))}</span>`;
+  $("tk-step").innerHTML = stepHtml;
+  const gapNow = ghostGap(now);
+  $("tk-ghost").textContent = gapNow === null ? "" : "👻 " + ghostShort(gapNow, now);
+  $("tk-ghost").className = "tk-ghost" + (gapNow !== null && gapNow < -3 ? " behind" : "");
+  $("tk-said").textContent = trk.lastSaid ? "🔊 " + trk.lastSaid : "";
+
+  // Map: only reload the street map when the route runs off the edge
+  if (trk.pts.length) {
+    const lastPt = trk.pts[trk.pts.length - 1];
+    if (!trk.view || !mapInView(lastPt, trk.view)) {
+      trk.view = mapView(trk.pts);
+      $("tk-map").innerHTML = `<div class="map"><div class="map-in"><div class="map-tiles">${mapTiles(trk.view)}</div><div id="tk-line">${mapLine(trk.pts, trk.view)}</div></div><span class="map-credit">© OpenStreetMap</span></div>`;
+    } else {
+      $("tk-line").innerHTML = mapLine(trk.pts, trk.view);
+    }
+  }
+}
+
+$("track").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-tk]");
+  if (!b || trk.locked) return;
+  const a = b.dataset.tk, now = Date.now();
+  if (a === "cancel") { trackClose(); renderRun(); }
+  if (a === "go") trackGo(now);
+  if (a === "pause") trackPause(now);
+  if (a === "resume") trackResume(now);
+  if (a === "finish") trackFinish(now);
+  if (a === "discard" && confirm("Discard this " + RUN_TYPES[trk.type].verb + "? It won’t be saved.")) { trackClose(); renderRun(); }
+  if (a === "lock") { trk.locked = true; trackShell(); }
+});
+// Unlock needs a press and hold, so a pocket or a sleeve can't do it
+let unlockTimer = null;
+function trackUnlock() { trk.locked = false; if (trk.on || trk.armed) trackShell(); }
+$("track").addEventListener("pointerdown", function (e) {
+  if (!trk.locked || !e.target.closest("#tk-unlock")) return;
+  clearTimeout(unlockTimer);
+  unlockTimer = setTimeout(trackUnlock, 800);
+});
+["pointerup", "pointerleave", "pointercancel"].forEach(function (type) {
+  $("track").addEventListener(type, function () { clearTimeout(unlockTimer); });
+});
+// Coming back to the app after the screen was off: GPS was not listening meanwhile
+document.addEventListener("visibilitychange", function () {
+  if (document.visibilityState !== "visible" || !trk.on) return;
+  if (!NATIVE && !trk.paused) trk.gaps++;          // the website lost GPS while hidden; the installed app did not
+  trackPaint(Date.now());
+});
+// A street-map square that fails to load (no signal) is simply hidden
+document.addEventListener("error", function (e) {
+  if (e.target && e.target.classList && e.target.classList.contains("map-tile")) e.target.style.visibility = "hidden";
+}, true);
+
+
+// =====================================================================
+// RUNNING COACH
+// A week-by-week plan towards a race. Every pace comes from one number:
+// your current 5K time.
+// =====================================================================
+const RUN_GOALS = {
+  "5k":       { label: "5K",            km: 5,      weeks: 8,  taper: 1, long: [4, 8],   easy: [3, 5],  tempo: [15, 25], reps: [[6, 0.4, 90], [5, 0.8, 120], [5, 1, 120]] },
+  "10k":      { label: "10K",           km: 10,     weeks: 10, taper: 1, long: [6, 14],  easy: [4, 7],  tempo: [15, 30], reps: [[6, 0.4, 90], [5, 0.8, 120], [5, 1, 120]] },
+  "half":     { label: "Half marathon", km: 21.0975, weeks: 12, taper: 2, long: [9, 19],  easy: [5, 9],  tempo: [20, 40], reps: [[6, 0.8, 120], [5, 1, 120], [4, 1.6, 150]] },
+  "marathon": { label: "Marathon",      km: 42.195, weeks: 16, taper: 2, long: [13, 32], easy: [6, 11], tempo: [20, 40], reps: [[6, 0.8, 120], [5, 1, 120], [4, 1.6, 150]] }
+};
+const halfKm = function (km) { return Math.round(km * 2) / 2; };       // to the nearest 0.5 km
+
+// Seconds-per-km ranges for each kind of running, from a 5K time in seconds
+function runPaces(t5) {
+  const p = t5 / 5;
+  return { easy: [p * 1.22, p * 1.35], long: [p * 1.25, p * 1.38], tempo: [p * 1.05, p * 1.10], fast: [p * 0.95, p * 1.0] };
+}
+function racePace(t5, km) { const p = riegel(t5, 5, km) / km; return [p * 0.99, p * 1.01]; }
+
+// How long a session should take, with timed parts as they are and distances at their target pace
+function sessionSecs(steps) {
+  return Math.round(steps.reduce(function (n, s) { return n + (s.km ? s.km * (s.pace ? (s.pace[0] + s.pace[1]) / 2 : 390) : s.secs); }, 0));
+}
+function sessionKm(steps) {
+  return steps.reduce(function (n, s) { return n + (s.km ? s.km : s.secs / (s.pace ? (s.pace[0] + s.pace[1]) / 2 : 390)); }, 0);
+}
+
+// The whole plan. plan = { goal, perWeek, t5 }
+function planWeeks(plan) {
+  const g = RUN_GOALS[plan.goal] || RUN_GOALS["5k"];
+  const pc = runPaces(plan.t5);
+  const build = g.weeks - g.taper;
+  const lerp = function (r, p) { return r[0] + (r[1] - r[0]) * p; };
+  const weeks = [];
+
+  for (let w = 1; w <= g.weeks; w++) {
+    const p = Math.min(1, (w - 1) / (build - 1));
+    const cut = w < build && w % 4 === 0;                      // every 4th week is lighter, to recover
+    const raceWeek = w === g.weeks, taper = w > build && !raceWeek;
+    const scale = raceWeek ? 0.5 : taper ? 0.7 : cut ? 0.8 : 1;
+    const easyKm = Math.max(3, halfKm(lerp(g.easy, p) * scale));
+    const easy = function () { return { type: "easy", title: "Easy run", steps: [{ kind: "easy", km: easyKm, pace: pc.easy }] }; };
+
+    let quality;
+    if (raceWeek) {
+      quality = { type: "easy", title: "Easy run with pick-ups", steps: [{ kind: "easy", km: Math.max(3, halfKm(easyKm)), pace: pc.easy }] };
+    } else if (w % 2 === 1) {
+      const r = g.reps[Math.min(2, Math.floor(p * 3))];
+      const n = Math.max(3, Math.round(r[0] * (scale < 1 ? 0.7 : 1)));
+      const steps = [{ kind: "warm", secs: 600, pace: pc.easy }];
+      for (let i = 1; i <= n; i++) {
+        steps.push({ kind: "fast", km: r[1], pace: pc.fast, n: i, of: n });
+        if (i < n) steps.push({ kind: "recover", secs: r[2], pace: [pc.easy[1], pc.easy[1] * 1.3] });
+      }
+      steps.push({ kind: "cool", secs: 300, pace: pc.easy });
+      quality = { type: "intervals", title: "Intervals: " + n + " × " + (r[1] < 1 ? r[1] * 1000 + " m" : r[1] + " km"), steps: steps };
+    } else {
+      const mins = Math.max(10, Math.round(lerp(g.tempo, p) * scale / 5) * 5);
+      quality = { type: "tempo", title: "Tempo: " + mins + " min", steps: [{ kind: "warm", secs: 600, pace: pc.easy }, { kind: "tempo", secs: mins * 60, pace: pc.tempo }, { kind: "cool", secs: 300, pace: pc.easy }] };
+    }
+
+    const longKm = halfKm(lerp(g.long, p) * (taper ? 0.7 : cut ? 0.8 : 1));
+    const long = raceWeek
+      ? { type: "race", title: "Race day: " + g.label, steps: [{ kind: "race", km: g.km, pace: racePace(plan.t5, g.km) }] }
+      : { type: "long", title: "Long run", steps: [{ kind: "long", km: longKm, pace: pc.long }] };
+
+    const sessions = plan.perWeek <= 2 ? [quality, long] : plan.perWeek === 3 ? [easy(), quality, long] : [easy(), quality, easy(), long];
+    sessions.forEach(function (s, i) { s.id = "w" + w + "-" + (i + 1); s.km = Math.round(sessionKm(s.steps) * 10) / 10; s.secs = sessionSecs(s.steps); });
+    weeks.push({ n: w, note: raceWeek ? "Race week" : taper ? "Taper: less running, same sharpness" : cut ? "Lighter week to recover" : "", sessions: sessions,
+                 km: Math.round(sessions.reduce(function (t, s) { return t + s.km; }, 0) * 10) / 10 });
+  }
+  return weeks;
+}
+
+function newRunPlan(o) {
+  return { goal: RUN_GOALS[o.goal] ? o.goal : "5k", perWeek: Math.max(2, Math.min(4, Number(o.perWeek) || 3)),
+           t5: Math.max(720, Math.min(3600, Math.round(o.t5) || 1680)), start: weekBounds(0).start, done: {}, suggest: 0,
+           days: (Array.isArray(o.days) ? o.days : []).map(Number).filter(function (d, i, a) { return d >= 0 && d <= 6 && a.indexOf(d) === i; }).sort() };
+}
+// Which week of the plan today falls in (1 = first). Past the end = finished.
+function planWeekNow() {
+  if (!runPlan) return 0;
+  const days = Math.round((new Date(dateKey(new Date()) + "T00:00:00") - new Date(runPlan.start + "T00:00:00")) / 86400000);
+  return Math.floor(days / 7) + 1;
+}
+function findSession(id) {
+  if (!runPlan) return null;
+  let found = null;
+  planWeeks(runPlan).forEach(function (w) { w.sessions.forEach(function (s) { if (s.id === id) found = s; }); });
+  return found;
+}
+function sessionLine(s) {
+  const main = s.steps.filter(function (x) { return x.kind !== "warm" && x.kind !== "cool" && x.kind !== "recover"; })[0];
+  return fmtKm(s.km) + " · about " + Math.round(s.secs / 60) + " min" + (main && main.pace ? " · " + paceStr(main.pace[0]) + "–" + paceStr(main.pace[1]) + paceUnit() : "");
+}
+
+function renderCoach() {
+  const el = $("coach-card");
+  if (!el) return;
+  if (!runPlan) {
+    el.innerHTML = `<div class="card-label">Running coach</div>
+      <div class="big">Train for a race</div>
+      <div class="feed-meta">A week-by-week plan for a 5K, 10K, half or full marathon. Each run has its own target pace, and the app talks you through it as you go.</div>
+      <button class="btn" data-co="setup">Build my plan</button>`;
+    return;
+  }
+  const g = RUN_GOALS[runPlan.goal], weeks = planWeeks(runPlan), now = planWeekNow();
+  if (now > weeks.length) {
+    const doneCount = Object.keys(runPlan.done).length;
+    el.innerHTML = `<div class="card-label">Running coach</div><div class="big">${g.label} plan finished</div>
+      <div class="feed-meta">You completed ${doneCount} of ${weeks.length * runPlan.perWeek} runs. Ready for the next one?</div>
+      <div class="btn-row"><button class="btn" data-co="setup">New plan</button><button class="btn ghost" data-co="end">Clear</button></div>`;
+    return;
+  }
+  const wk = weeks[Math.max(1, now) - 1];
+  const doneThis = wk.sessions.filter(function (s) { return runPlan.done[s.id]; }).length;
+  const next = wk.sessions.filter(function (s) { return !runPlan.done[s.id]; })[0];
+  let html = `<div class="card-label">Running coach · ${g.label}</div>
+    <div class="up-row now" style="border:0;padding:0"><span class="big">Week ${wk.n} of ${weeks.length}</span><b>${doneThis} / ${wk.sessions.length} runs</b></div>
+    <div class="obj-bar"><i style="width:${Math.round((wk.n - 1 + doneThis / wk.sessions.length) / weeks.length * 100)}%"></i></div>
+    ${wk.note ? `<div class="feed-meta" style="margin-top:.5rem">${wk.note}</div>` : ""}`;
+  const onDay = {}, placedRuns = runPlacement(addDays(runPlan.start, 7 * (wk.n - 1)), wk.sessions).place;
+  Object.keys(placedRuns).forEach(function (k) { onDay[placedRuns[k].id] = DAY_NAMES[k]; });
+  wk.sessions.forEach(function (s) {
+    const done = !!runPlan.done[s.id];
+    html += `<div class="co-row${done ? " done" : ""}">
+      <div><div class="pr-name">${done ? "✓ " : ""}${onDay[s.id] ? onDay[s.id] + " · " : ""}${esc(s.title)}</div><div class="pr-sub">${sessionLine(s)}</div></div>
+      ${done ? `<button class="tool" data-co="undo" data-id="${s.id}">Undo</button>`
+             : `<div class="co-btns"><button class="tool" data-co="tick" data-id="${s.id}">Done</button><button class="tool${s === next ? " on" : ""}" data-co="start" data-id="${s.id}">Start</button></div>`}
+    </div>`;
+  });
+  if (runPlan.suggest) {
+    html += `<div class="trend-line" style="margin-top:.8rem">Your last run points to a 5K of about <b>${runClock(runPlan.suggest)}</b> (the plan uses ${runClock(runPlan.t5)}). Make the target paces faster to match?
+      <div class="btn-row" style="margin-top:.5rem"><button class="btn" data-co="faster">Update paces</button><button class="btn ghost" data-co="keep">Keep as is</button></div></div>`;
+  }
+  html += `<div class="feed-meta" style="margin-top:.7rem">On current form: ${g.label} in about <b>${runClock(riegel(runPlan.t5, 5, g.km))}</b>.</div>
+    <div class="btn-row" style="margin-top:.6rem"><button class="btn ghost" data-co="full">Full plan</button><button class="btn ghost" data-co="setup">Change</button></div>`;
+  el.innerHTML = html;
+}
+
+// ----- building or changing the plan -----
+let planDraft = null;
+function openPlanSetup() {
+  if (!planDraft) planDraft = runPlan ? { goal: runPlan.goal, perWeek: runPlan.perWeek, t5: runClock(runPlan.t5), days: (runPlan.days || []).slice() } : { goal: "5k", perWeek: 3, t5: "", days: [] };
+  const d = planDraft, secs = parseClock(d.t5), g = RUN_GOALS[d.goal];
+  const chip = function (key, value, label) { return `<button class="chip${String(d[key]) === String(value) ? " on" : ""}" data-run="draft" data-k="${key}" data-v="${value}">${label}</button>`; };
+  openSheet(`<div class="card-label">Running coach</div><div class="big">${runPlan ? "Change your plan" : "Build your plan"}</div>
+    <div class="goal-group" style="margin-top:.9rem"><div class="card-label">What are you training for?</div>
+      <div class="chips">${Object.keys(RUN_GOALS).map(function (k) { return chip("goal", k, RUN_GOALS[k].label); }).join("")}</div>
+      <div class="feed-meta" style="margin-top:.4rem">${g.weeks} weeks, building to a ${fmtKm(g.long[1])} long run.</div></div>
+    <div class="goal-group"><div class="card-label">Runs per week</div>
+      <div class="chips">${chip("perWeek", 2, "2")}${chip("perWeek", 3, "3")}${chip("perWeek", 4, "4")}</div></div>
+    ${goals.rota ? `<div class="goal-group"><div class="card-label">Run days</div><div class="feed-meta">Your run days follow your shift pattern. Change them under “Run on” in Me → Goals.</div></div>` : `<div class="goal-group"><div class="card-label">Run days</div>
+      <div class="chips">${DAY_NAMES.map(function (n, i) { return `<button class="chip${d.days.indexOf(i) >= 0 ? " on" : ""}" data-run="day" data-v="${i}">${n}</button>`; }).join("")}</div>
+      <div class="feed-meta" style="margin-top:.4rem">${d.days.length === d.perWeek ? "The long run goes on " + DAY_FULL[d.days.indexOf(6) >= 0 ? 6 : d.days.indexOf(5) >= 0 ? 5 : d.days[d.days.length - 1]] + "."
+        : d.days.length ? "Pick " + d.perWeek + " days (you have " + d.days.length + "), or clear them and BTB chooses."
+        : "Leave these empty and BTB picks days around your gym sessions: " + autoRunDays(d.perWeek, goals.trainDays).map(function (i) { return DAY_NAMES[i]; }).join(", ") + "."}</div></div>`}
+    <div class="goal-group"><div class="card-label">Your 5K time right now (minutes:seconds)</div>
+      <input type="text" inputmode="numeric" class="inp-date" id="pl-t5" placeholder="e.g. 28:00" value="${esc(d.t5)}">
+      <div class="chips" style="margin-top:.5rem"><span class="feed-meta" style="align-self:center">Not sure?</span>
+        <button class="chip" data-run="guess" data-v="36:00">New to running</button><button class="chip" data-run="guess" data-v="29:00">Run sometimes</button><button class="chip" data-run="guess" data-v="24:00">Run a lot</button></div>
+      <div class="feed-meta" style="margin-top:.4rem">Every target pace comes from this. A rough figure is fine: the app offers to update it when your runs get quicker.</div></div>
+    <div class="feed-meta" id="pl-msg">${secs ? "Easy runs at about " + paceStr(runPaces(secs).easy[0]) + "–" + paceStr(runPaces(secs).easy[1]) + paceUnit() + ". Predicted " + g.label + ": " + runClock(riegel(secs, 5, g.km)) + "." : "The plan assumes you can already jog for about 20 minutes without stopping."}</div>
+    <button class="btn" data-run="plan-save">${runPlan ? "Save changes" : "Start plan this week"}</button>
+    ${runPlan ? `<button class="btn ghost" data-run="plan-end">End this plan</button>` : ""}
+    <button class="btn ghost" data-a="add-close">Cancel</button>`);
+}
+function savePlanDraft() {
+  const secs = parseClock(($("pl-t5") || {}).value || planDraft.t5);
+  if (secs < 720 || secs > 3600) { $("pl-msg").textContent = "Enter your 5K time as minutes:seconds, between 12:00 and 60:00."; return false; }
+  const fresh = newRunPlan({ goal: planDraft.goal, perWeek: planDraft.perWeek, t5: secs, days: planDraft.days.length === Number(planDraft.perWeek) ? planDraft.days : [] });
+  if (runPlan && runPlan.goal === fresh.goal) { fresh.start = runPlan.start; fresh.done = runPlan.done; }   // same race: keep your place
+  runPlan = fresh; planDraft = null;
+  saveRunPlan(); closeSheet(); renderRun(); refreshHome();
+  return true;
+}
+function openFullPlan() {
+  const g = RUN_GOALS[runPlan.goal], now = planWeekNow();
+  openSheet(`<div class="card-label">${g.label} plan</div><div class="big">${g.weeks} weeks</div>
+    ${planWeeks(runPlan).map(function (w) {
+      return `<div class="co-week${w.n === now ? " now" : ""}"><div class="card-label">Week ${w.n}${w.n === now ? " · this week" : ""} · ${fmtKm(w.km)}${w.note ? " · " + w.note : ""}</div>
+        ${w.sessions.map(function (s) { return `<div class="pr-row"><span>${runPlan.done[s.id] ? "✓ " : ""}${esc(s.title)}</span><span class="feed-meta">${fmtKm(s.km)}</span></div>`; }).join("")}</div>`;
+    }).join("")}
+    <button class="btn" data-a="add-close">Close</button>`);
+}
+
+$("coach-card").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-co]");
+  if (!b) return;
+  const a = b.dataset.co, id = b.dataset.id;
+  if (a === "setup") { planDraft = null; openPlanSetup(); return; }
+  if (a === "full") { openFullPlan(); return; }
+  if (a === "end") { runPlan = null; saveRunPlan(); }
+  if (a === "start") { const s = findSession(id); if (s) trackArm({ steps: s.steps, session: s.id, title: s.title }); return; }
+  if (a === "tick") runPlan.done[id] = "manual";
+  if (a === "undo") delete runPlan.done[id];
+  if (a === "faster") { runPlan.t5 = runPlan.suggest; runPlan.suggest = 0; }
+  if (a === "keep") runPlan.suggest = 0;
+  saveRunPlan();
+  renderCoach();
+});
+
+
+// =====================================================================
+// RUN SCREEN: start a run, and the runs you've done
+// =====================================================================
+let runsShown = 8;
+
+function renderRunSetup() {
+  const el = $("run-setup");
+  if (!el) return;
+  const p = runPrefs;
+  const chip = function (key, value, label) { return `<button class="chip${String(p[key]) === String(value) ? " on" : ""}" data-rs="set" data-k="${key}" data-v="${value}">${label}</button>`; };
+  const halfText = p.goal === "dist" ? fmtKm(p.km / 2) : runClock(p.mins * 30);
+  el.innerHTML = `<div class="chips">${chip("type", "run", "Run")}${chip("type", "ride", "Ride")}${chip("type", "walk", "Walk")}</div>
+    <div class="goal-group" style="margin-top:.9rem"><div class="card-label">Goal</div>
+      <div class="chips">${chip("goal", "free", "Just go")}${chip("goal", "dist", "Distance")}${chip("goal", "time", "Time")}</div>
+      ${p.goal === "dist" ? `<div class="rs-val"><input class="set-input" id="rs-km" inputmode="decimal" value="${fmt(Math.round(distToDisp(p.km) * 100) / 100)}"><span>${distUnit()}</span></div>` : ""}
+      ${p.goal === "time" ? `<div class="rs-val"><input class="set-input" id="rs-mins" inputmode="numeric" value="${p.mins}"><span>minutes</span></div>` : ""}
+    </div>
+    ${p.goal !== "free" ? `<div class="goal-group"><div class="card-label">Route</div>
+      <div class="chips">${chip("outBack", false, "Any route")}${chip("outBack", true, "Out and back")}</div>
+      ${p.outBack ? `<div class="feed-meta" style="margin-top:.4rem">You’ll be told to turn around at ${halfText}, so you finish where you started.</div>` : ""}</div>` : ""}
+    <div class="goal-group"><div class="card-label">Voice updates</div>
+      <div class="chips">${chip("cues", "off", "Off")}${chip("cues", "0.5", "Every 0.5 " + distUnit())}${chip("cues", "1", "Every " + distUnit())}</div>
+      <div class="feed-meta" style="margin-top:.4rem">Distance, time and pace, spoken through your headphones or the phone speaker.</div></div>
+    <div class="goal-group"><div class="card-label">Race your best</div>
+      <div class="chips">${chip("ghost", "on", "On")}${chip("ghost", "off", "Off")}</div>
+      <div class="feed-meta" style="margin-top:.4rem">Start where you’ve started before and you’re told how far ahead or behind your best run from there you are.</div></div>
+    <div class="goal-group"><div class="card-label">Auto-pause</div>
+      <div class="chips">${chip("autoPause", "on", "On")}${chip("autoPause", "off", "Off")}</div>
+      <div class="feed-meta" style="margin-top:.4rem">Stops the clock when you stand still for 10 seconds (traffic lights, a gate) and starts it again when you move.</div></div>
+    <button class="btn" data-rs="start">Start ${RUN_TYPES[p.type].verb}</button>
+    <button class="link-btn" data-rs="manual">Log one by hand (no GPS)</button>`;
+}
+$("run-setup").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-rs]");
+  if (!b) return;
+  if (b.dataset.rs === "start") { trackArm(); return; }
+  if (b.dataset.rs === "manual") { openManualRun(); return; }
+  const k = b.dataset.k, v = b.dataset.v;
+  runPrefs[k] = k === "outBack" ? v === "true" : v;
+  saveRunPrefs();
+  renderRunSetup();
+});
+$("run-setup").addEventListener("change", function (e) {
+  const n = parseFloat(String(e.target.value).replace(",", "."));
+  if (e.target.id === "rs-km" && n > 0) runPrefs.km = Math.min(300, Math.round(distFromDisp(n) * 1000) / 1000);
+  else if (e.target.id === "rs-mins" && n > 0) runPrefs.mins = Math.min(600, Math.round(n));
+  else return;
+  saveRunPrefs();
+  renderRunSetup();
+});
+
+function runTotals(offset) {
+  const b = weekBounds(offset), out = { count: 0, km: 0, secs: 0 };
+  runs.forEach(function (r) { if (r.date >= b.start && r.date <= b.end) { out.count++; out.km += r.km; out.secs += r.secs; } });
+  return out;
+}
+function runStat(r) { return r.type === "ride" ? speedStr(r.km, r.secs) : paceStr(r.secs / r.km) + " " + paceUnit(); }
+function niceDate(key) { return new Date(key + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }); }
+
+function renderRunList() {
+  const el = $("run-list");
+  if (!el) return;
+  if (!runs.length) { el.innerHTML = `<p class="feed-meta">Your runs, rides and walks will show here.</p>`; return; }
+  const t = runTotals(0);
+  let html = `<div class="card"><div class="card-label">This week</div>
+    <div class="tk-stats"><div><b>${t.count}</b><span>${t.count === 1 ? "Activity" : "Activities"}</span></div><div><b>${fmt(round1(distToDisp(t.km)))}</b><span>${distUnit()}</span></div><div><b>${runClock(t.secs)}</b><span>Time</span></div></div></div>`;
+  const pb = runBests();
+  if (Object.keys(pb).length) {
+    html += `<div class="card"><div class="card-label">Your fastest</div>` +
+      BEST_DISTS.filter(function (bd) { return pb[bd[0]]; }).map(function (bd) {
+        return `<div class="pr-row"><span>${bd[2]}</span><span><b>${runClock(pb[bd[0]].secs)}</b> <span class="feed-meta">· ${niceDate(pb[bd[0]].date)}</span></span></div>`;
+      }).join("") + `</div>`;
+  }
+  const list = runs.slice().reverse();
+  list.slice(0, runsShown).forEach(function (r) {
+    html += `<button type="button" class="card run-row" data-rl="open" data-id="${esc(r.id)}">
+      ${routeThumb(decodeRoute(r.route))}
+      <span class="run-txt"><span class="pr-name">${esc(r.title || RUN_TYPES[r.type].label)}</span>
+        <span class="pr-sub">${niceDate(r.date)} · ${fmtKm(r.km)} · ${runClock(r.secs)}${r.km > 0 ? " · " + runStat(r) : ""}</span></span></button>`;
+  });
+  if (list.length > runsShown) html += `<button class="btn ghost" data-rl="more">Show more (${list.length - runsShown} older)</button>`;
+  el.innerHTML = html;
+}
+$("run-list").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-rl]");
+  if (!b) return;
+  if (b.dataset.rl === "more") { runsShown += 10; renderRunList(); }
+  if (b.dataset.rl === "open") openRunDetail(b.dataset.id, false);
+});
+
+function openRunDetail(id, justDone) {
+  const r = runs.filter(function (x) { return x.id === id; })[0];
+  if (!r) return;
+  const pts = decodeRoute(r.route);
+  const perUnit = (r.unit || "km") === "mi" ? "mi" : "km";
+  const fastest = r.splits && r.splits.length ? Math.min.apply(null, r.splits) : 0;
+  const s = r.session ? findSession(r.session) : null;
+  openSheet(`<div class="card-label">${justDone ? "Saved" : niceDate(r.date)}</div>
+    <div class="big">${esc(r.title || RUN_TYPES[r.type].label)}</div>
+    <div class="tk-stats" style="margin:.9rem 0"><div><b>${dist2(r.km)}</b><span>${distUnit()}</span></div><div><b>${runClock(r.secs)}</b><span>Time</span></div>
+      <div><b>${r.km > 0 ? (r.type === "ride" ? speedStr(r.km, r.secs).split(" ")[0] : paceStr(r.secs / r.km)) : "–"}</b><span>${r.type === "ride" ? (distUnit() === "mi" ? "mph" : "km/h") : "Pace " + paceUnit()}</span></div></div>
+    ${pts.length ? mapHtml(pts) : ""}
+    ${(r.pb || []).map(function (k) { const bd = BEST_DISTS.filter(function (x) { return x[0] === k; })[0]; return bd ? `<div class="pr-line">🏆 Your fastest <b>${bd[2]}</b>: ${runClock(r.best[k])}</div>` : ""; }).join("")}
+    ${r.vs ? `<div class="pr-line">👻 ${r.vs.secs >= 3 ? "<b>" + runClock(r.vs.secs) + " faster</b> than your best on this route" : r.vs.secs <= -3 ? runClock(-r.vs.secs) + " slower than your best on this route" : "Level with your best on this route"} (${niceDate(r.vs.date)})</div>` : ""}
+    ${s ? `<div class="trend-line" style="margin-top:.8rem">Coach session: ${esc(s.title)}. Planned ${fmtKm(s.km)} in about ${Math.round(s.secs / 60)} min.</div>` : ""}
+    ${r.gaps ? `<div class="feed-meta" style="margin-top:.6rem">The screen went off ${r.gaps === 1 ? "once" : r.gaps + " times"} during this one, so some distance may be missing.</div>` : ""}
+    ${r.splits && r.splits.length ? `<div class="card-label" style="margin-top:.9rem">Splits</div>
+      ${r.splits.map(function (sec, i) { return `<div class="pr-row"><span>${i + 1} ${perUnit}</span><span${sec === fastest && r.splits.length > 1 ? ' style="color:var(--accent);font-weight:700"' : ""}>${runClock(sec)}</span></div>`; }).join("")}` : ""}
+    <button class="btn" data-run="share" data-id="${esc(r.id)}" style="margin-top:1rem">Share picture</button>
+    ${pts.length > 1 ? `<button class="btn ghost" data-run="gpx" data-id="${esc(r.id)}">Export for Strava (GPX file)</button>` : ""}
+    <button class="btn ghost" data-a="add-close">${justDone ? "Done" : "Close"}</button>
+    <button class="link-btn" data-run="delete" data-id="${esc(r.id)}">Delete this ${RUN_TYPES[r.type].verb}</button>`);
+}
+
+// ----- a picture of the run, for social media -----
+// The words on the picture, worked out separately so they can be checked
+function shareCardText(r) {
+  const ride = r.type === "ride";
+  return { title: r.title || RUN_TYPES[r.type].label, date: niceDate(r.date),
+           stats: [[dist2(r.km), distUnit()], [runClock(r.secs), "time"],
+                   [r.km > 0 ? (ride ? speedStr(r.km, r.secs).split(" ")[0] : paceStr(r.secs / r.km)) : "–", ride ? (distUnit() === "mi" ? "mph" : "km/h") : "pace " + paceUnit()]] };
+}
+function loadImg(src, cors) {
+  return new Promise(function (resolve) {
+    const img = new Image();
+    if (cors) img.crossOrigin = "anonymous";
+    const timer = setTimeout(function () { resolve(null); }, 3000);
+    img.onload = function () { clearTimeout(timer); resolve(img); };
+    img.onerror = function () { clearTimeout(timer); resolve(null); };
+    img.src = src;
+  });
+}
+// Draws a 1080 x 1350 picture (the tall shape Instagram likes) and gives back the canvas
+function drawShareCard(r) {
+  const W = 1080, H = 1350, MAPH = 800;
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const c = cv.getContext("2d");
+  const css = getComputedStyle(document.documentElement);
+  const accent = (css.getPropertyValue("--accent") || "#ffffff").trim() || "#ffffff";
+  const pts = decodeRoute(r.route);
+  const t = shareCardText(r);
+  c.fillStyle = "#0b0b0d"; c.fillRect(0, 0, W, H);
+
+  // Route area: the street map if it can be fetched, and always the route line
+  let view = null, tiles = Promise.resolve([]);
+  if (pts.length > 1) {
+    // same maths as the on-screen map, at 2.25x the size
+    const K = W / MAP_W;
+    let z = 17, a, b;
+    const lats = pts.map(function (p) { return p[0]; }), lngs = pts.map(function (p) { return p[1]; });
+    const n = Math.max.apply(null, lats), s2 = Math.min.apply(null, lats), w = Math.min.apply(null, lngs), e = Math.max.apply(null, lngs);
+    for (; z > 2; z--) { a = mapProj(n, w, z); b = mapProj(s2, e, z); if ((b[0] - a[0]) * K <= W - 260 && (b[1] - a[1]) * K <= MAPH - 240) break; }
+    a = mapProj(n, w, z); b = mapProj(s2, e, z);
+    view = { z: z, K: K, x0: (a[0] + b[0]) / 2 - W / K / 2, y0: (a[1] + b[1]) / 2 - MAPH / K / 2 };
+    const jobs = [], max = Math.pow(2, z);
+    for (let tx = Math.floor(view.x0 / 256); tx * 256 < view.x0 + W / K; tx++) {
+      for (let ty = Math.floor(view.y0 / 256); ty * 256 < view.y0 + MAPH / K; ty++) {
+        if (ty < 0 || ty >= max) continue;
+        (function (tx, ty) {
+          jobs.push(loadImg("https://tile.openstreetmap.org/" + z + "/" + (((tx % max) + max) % max) + "/" + ty + ".png", true)
+            .then(function (img) { return { img: img, x: (tx * 256 - view.x0) * K, y: (ty * 256 - view.y0) * K }; }));
+        })(tx, ty);
+      }
+    }
+    tiles = Promise.all(jobs);
+  }
+
+  return Promise.all([tiles, loadImg("logo-mark.svg", false)]).then(function (got) {
+    const tileList = got[0], logo = got[1];
+    let mapped = false;
+    if (view && tileList.length && tileList.every(function (q) { return q.img; })) {
+      try {
+        c.save();
+        c.beginPath(); c.rect(0, 0, W, MAPH); c.clip();
+        c.filter = "invert(1) hue-rotate(180deg) brightness(.8) contrast(.9) saturate(.4)";
+        tileList.forEach(function (q) { c.drawImage(q.img, q.x, q.y, 256 * view.K + 1, 256 * view.K + 1); });
+        c.restore();
+        mapped = true;
+      } catch (err) { c.restore(); }
+    }
+    // fade the bottom of the map into the card
+    const fade = c.createLinearGradient(0, MAPH - 260, 0, MAPH);
+    fade.addColorStop(0, "rgba(11,11,13,0)"); fade.addColorStop(1, "rgba(11,11,13,1)");
+    c.fillStyle = fade; c.fillRect(0, MAPH - 260, W, 262);
+
+    if (view) {
+      const xy = pts.map(function (p) { const q = mapProj(p[0], p[1], view.z); return [(q[0] - view.x0) * view.K, (q[1] - view.y0) * view.K]; });
+      c.lineJoin = "round"; c.lineCap = "round";
+      c.beginPath(); xy.forEach(function (q, i) { if (i) c.lineTo(q[0], q[1]); else c.moveTo(q[0], q[1]); });
+      c.strokeStyle = "rgba(0,0,0,.55)"; c.lineWidth = 20; c.stroke();
+      c.strokeStyle = accent; c.lineWidth = 11; c.stroke();
+      c.fillStyle = "#fff"; c.beginPath(); c.arc(xy[0][0], xy[0][1], 13, 0, 7); c.fill();
+      const last = xy[xy.length - 1];
+      c.fillStyle = accent; c.strokeStyle = "#fff"; c.lineWidth = 6; c.beginPath(); c.arc(last[0], last[1], 15, 0, 7); c.fill(); c.stroke();
+    }
+    if (mapped) { c.fillStyle = "rgba(255,255,255,.55)"; c.font = "22px system-ui, sans-serif"; c.textAlign = "right"; c.fillText("© OpenStreetMap", W - 28, 40); }
+
+    // Words
+    const font = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
+    const top = view ? MAPH + 50 : 420;
+    c.textAlign = "left"; c.fillStyle = "#fff"; c.font = "800 76px " + font; c.fillText(t.title, 70, top, W - 140);
+    c.fillStyle = "rgba(255,255,255,.6)"; c.font = "36px " + font; c.fillText(t.date, 70, top + 58);
+    t.stats.forEach(function (st, i) {
+      const x = 70 + i * ((W - 140) / 3);
+      c.fillStyle = "#fff"; c.font = "800 92px " + font; c.fillText(st[0], x, top + 200, (W - 140) / 3 - 20);
+      c.fillStyle = "rgba(255,255,255,.6)"; c.font = "32px " + font; c.fillText(st[1], x, top + 250);
+    });
+    // Badge
+    const by = H - 150;
+    if (logo) { try { c.drawImage(logo, 70, by, 84, 102); } catch (err) {} }
+    c.fillStyle = "#fff"; c.font = "800 44px " + font; c.fillText("BTB", logo ? 180 : 70, by + 48);
+    c.fillStyle = "rgba(255,255,255,.6)"; c.font = "600 26px " + font; c.fillText("B E Y O N D   T H E   B O D Y", logo ? 180 : 70, by + 90);
+    return cv;
+  });
+}
+function shareRun(id) {
+  const r = runs.filter(function (x) { return x.id === id; })[0];
+  if (!r) return Promise.resolve("failed");
+  return drawShareCard(r).then(function (cv) {
+    return new Promise(function (resolve) { cv.toBlob(resolve, "image/png"); });
+  }).then(function (blob) {
+    if (!blob) { alert("Couldn’t make the picture."); return "failed"; }
+    const t = shareCardText(r);
+    return fileOut("btb-" + r.type + "-" + r.date + ".png", blob, { share: true, title: t.title, text: t.stats[0].join(" ") + " in " + t.stats[1][0] + " with BTB" });
+  });
+}
+
+// ----- export a run as a GPX file (the standard route file Strava and others accept) -----
+function runStartMs(r) {
+  const n = Number(String(r.id).slice(1));
+  return n > 1e12 && n < 4e12 ? n : new Date(r.date + "T12:00:00").getTime();
+}
+function buildGpx(r) {
+  const pts = decodeRoute(r.route);
+  let times = decodeTimes(r.rt);
+  if (times.length !== pts.length) {
+    // An older run with no clock times stored: spread the time along the route by distance
+    let total = 0;
+    const cum = pts.map(function (p, i) { if (i) total += haversine(pts[i - 1][0], pts[i - 1][1], p[0], p[1]); return total; });
+    times = cum.map(function (d) { return total > 0 ? Math.round(r.secs * d / total) : 0; });
+  }
+  const start = runStartMs(r);
+  const iso = function (secs) { return new Date(start + secs * 1000).toISOString().replace(/\.\d{3}Z$/, "Z"); };
+  const kind = { run: "running", ride: "cycling", walk: "walking" }[r.type] || "running";
+  return '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<gpx version="1.1" creator="BTB - Beyond The Body" xmlns="http://www.topografix.com/GPX/1/1">\n' +
+    ' <metadata><time>' + iso(0) + '</time></metadata>\n' +
+    ' <trk>\n  <name>' + esc(r.title || RUN_TYPES[r.type].label) + '</name>\n  <type>' + kind + '</type>\n  <trkseg>\n' +
+    pts.map(function (p, i) { return '   <trkpt lat="' + p[0].toFixed(5) + '" lon="' + p[1].toFixed(5) + '"><time>' + iso(times[i]) + '</time></trkpt>'; }).join("\n") +
+    '\n  </trkseg>\n </trk>\n</gpx>\n';
+}
+function exportGpx(id) {
+  const r = runs.filter(function (x) { return x.id === id; })[0];
+  if (!r) return Promise.resolve("failed");
+  return fileOut("btb-" + r.type + "-" + r.date + ".gpx", new Blob([buildGpx(r)], { type: "application/gpx+xml" }), { title: "BTB " + RUN_TYPES[r.type].verb });
+}
+
+// ----- a picture of a gym session, for social media -----
+function workoutCardText(w) {
+  const t = workoutTotals(w);
+  const lines = w.exercises.map(function (ex) {
+    if (isCardio(ex.name)) return [ex.name, ex.sets.map(cardioText).join(", ")];
+    let best = null;
+    ex.sets.forEach(function (s) { const kg = parseFloat(s.weight) || 0; if (!best || kg > best.kg) best = { kg: kg, reps: parseInt(s.reps) || 0 }; });
+    return [ex.name, best && best.kg ? fmtW(best.kg) + " " + unit() + " × " + best.reps : ex.sets.length + (ex.sets.length === 1 ? " set" : " sets")];
+  });
+  const stats = [[String(t.sets), "sets"]];
+  if (t.volume) stats.push([Math.round(toDisp(t.volume)).toLocaleString(), unit() + " lifted"]);
+  if (w.minutes) stats.push([String(w.minutes), "minutes"]);
+  return { title: w.name, date: niceDate(w.date), stats: stats, lines: lines.slice(0, 8), more: Math.max(0, lines.length - 8), stars: w.feel ? stars(w.feel) : "" };
+}
+function drawWorkoutCard(w) {
+  const W = 1080, H = 1350, t = workoutCardText(w);
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const c = cv.getContext("2d");
+  const css = getComputedStyle(document.documentElement);
+  const accent = (css.getPropertyValue("--accent") || "#ffffff").trim() || "#ffffff";
+  const font = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
+  const glow = c.createLinearGradient(0, 0, 0, H);
+  glow.addColorStop(0, "#1a1a1e"); glow.addColorStop(0.45, "#0b0b0d");
+  c.fillStyle = glow; c.fillRect(0, 0, W, H);
+  c.fillStyle = accent; c.fillRect(70, 96, 96, 10);
+  c.textAlign = "left"; c.fillStyle = "#fff"; c.font = "800 84px " + font; c.fillText(t.title, 70, 210, W - 140);
+  c.fillStyle = "rgba(255,255,255,.6)"; c.font = "36px " + font; c.fillText(t.date + (t.stars ? "   " + t.stars : ""), 70, 268);
+  t.stats.forEach(function (st, i) {
+    const x = 70 + i * ((W - 140) / 3);
+    c.fillStyle = "#fff"; c.font = "800 88px " + font; c.fillText(st[0], x, 420, (W - 140) / 3 - 24);
+    c.fillStyle = "rgba(255,255,255,.6)"; c.font = "30px " + font; c.fillText(st[1], x, 466);
+  });
+  let y = 580;
+  t.lines.forEach(function (ln) {
+    c.fillStyle = "rgba(255,255,255,.12)"; c.fillRect(70, y - 52, W - 140, 2);
+    c.textAlign = "left"; c.fillStyle = "#fff"; c.font = "600 38px " + font; c.fillText(ln[0], 70, y, W - 140 - 340);
+    c.textAlign = "right"; c.fillStyle = "rgba(255,255,255,.75)"; c.font = "36px " + font; c.fillText(ln[1], W - 70, y, 320);
+    y += 76;
+  });
+  if (t.more) { c.textAlign = "left"; c.fillStyle = "rgba(255,255,255,.5)"; c.font = "32px " + font; c.fillText("+ " + t.more + " more", 70, y); }
+  return loadImg("logo-mark.svg", false).then(function (logo) {
+    const by = H - 150;
+    c.textAlign = "left";
+    if (logo) { try { c.drawImage(logo, 70, by, 84, 102); } catch (err) {} }
+    c.fillStyle = "#fff"; c.font = "800 44px " + font; c.fillText("BTB", logo ? 180 : 70, by + 48);
+    c.fillStyle = "rgba(255,255,255,.6)"; c.font = "600 26px " + font; c.fillText("B E Y O N D   T H E   B O D Y", logo ? 180 : 70, by + 90);
+    return cv;
+  });
+}
+function shareWorkoutPic(index) {
+  const w = getHistory()[index];
+  if (!w) return Promise.resolve("failed");
+  return drawWorkoutCard(w).then(function (cv) {
+    return new Promise(function (resolve) { cv.toBlob(resolve, "image/png"); });
+  }).then(function (blob) {
+    if (!blob) { alert("Couldn’t make the picture."); return "failed"; }
+    return fileOut("btb-" + w.date + ".png", blob, { share: true, title: w.name, text: w.name + " done with BTB" });
+  });
+}
+
+function openManualRun() {
+  openSheet(`<div class="card-label">Log by hand</div><div class="big">Add a ${RUN_TYPES[runPrefs.type].verb}</div>
+    <div class="card-label" style="margin-top:.9rem">Date</div><input type="date" class="inp-date" id="mr-date" value="${dateKey(new Date())}" max="${dateKey(new Date())}">
+    <div class="card-label" style="margin-top:.7rem">Distance (${distUnit()})</div><input type="text" inputmode="decimal" class="inp-date" id="mr-km" placeholder="e.g. 5">
+    <div class="card-label" style="margin-top:.7rem">Time (minutes:seconds)</div><input type="text" inputmode="numeric" class="inp-date" id="mr-time" placeholder="e.g. 28:30">
+    <div class="feed-meta" id="mr-msg" style="margin-top:.5rem">For treadmill runs, or when you tracked it somewhere else.</div>
+    <button class="btn" data-run="manual-save">Save</button><button class="btn ghost" data-a="add-close">Cancel</button>`);
+}
+function saveManualRun() {
+  const km = distFromDisp(parseFloat(String($("mr-km").value).replace(",", ".")));
+  const secs = parseClock($("mr-time").value), date = $("mr-date").value;
+  if (!(km > 0 && km < 500) || !(secs > 0) || !/^\d{4}-\d{2}-\d{2}$/.test(date) || date > dateKey(new Date())) {
+    $("mr-msg").textContent = "Check the distance, the time (like 28:30) and that the date isn’t in the future.";
+    return false;
+  }
+  storeRun({ id: "r" + Date.now(), date: date, type: runPrefs.type, title: RUN_TYPES[runPrefs.type].label, km: Math.round(km * 1000) / 1000, secs: secs, splits: [], unit: distUnit(), route: [], session: null, gaps: 0 });
+  closeSheet();
+  return true;
+}
+
+$("sheet").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-run]");
+  if (!b) return;
+  const a = b.dataset.run;
+  if (a === "draft") { planDraft[b.dataset.k] = b.dataset.k === "perWeek" ? Number(b.dataset.v) : b.dataset.v; planDraft.t5 = ($("pl-t5") || {}).value || planDraft.t5; openPlanSetup(); }
+  if (a === "guess") { planDraft.t5 = b.dataset.v; openPlanSetup(); }
+  if (a === "day") {
+    const day = Number(b.dataset.v), at = planDraft.days.indexOf(day);
+    if (at >= 0) planDraft.days.splice(at, 1); else planDraft.days.push(day);
+    planDraft.days.sort();
+    planDraft.t5 = ($("pl-t5") || {}).value || planDraft.t5;
+    openPlanSetup();
+  }
+  if (a === "plan-save") { planDraft.t5 = ($("pl-t5") || {}).value || planDraft.t5; savePlanDraft(); }
+  if (a === "plan-end" && confirm("End this plan? Your runs stay in your history.")) { runPlan = null; planDraft = null; saveRunPlan(); closeSheet(); renderRun(); }
+  if (a === "manual-save") saveManualRun();
+  if (a === "gpx") exportGpx(b.dataset.id);
+  if (a === "gym-pic") { b.disabled = true; b.textContent = "Making picture…"; shareWorkoutPic(Number(b.dataset.i)).then(function () { b.disabled = false; b.textContent = "Share picture"; }); }
+  if (a === "share") { b.disabled = true; b.textContent = "Making picture…"; shareRun(b.dataset.id).then(function () { b.disabled = false; b.textContent = "Share picture"; }); }
+  if (a === "delete" && confirm("Delete this from your runs?")) {
+    const id = b.dataset.id;
+    runs = runs.filter(function (r) { return r.id !== id; });
+    saveRuns();
+    if (runPlan) Object.keys(runPlan.done).forEach(function (k) { if (runPlan.done[k] === id) delete runPlan.done[k]; });
+    saveRunPlan(); closeSheet(); renderRun();
+  }
+});
+
+// A run that was cut short because the app was closed
+function renderRunResume() {
+  const el = $("run-resume");
+  if (!el) return;
+  const live = load("runLive", null);
+  if (!live || trk.on || !(live.km > 0.05)) { el.innerHTML = ""; return; }
+  el.innerHTML = `<div class="card"><div class="card-label">Unfinished ${RUN_TYPES[live.type] ? RUN_TYPES[live.type].verb : "run"}</div>
+    <div class="feed-meta">The app closed during a ${fmtKm(live.km)}, ${runClock(live.secs)} ${RUN_TYPES[live.type] ? RUN_TYPES[live.type].verb : "run"} on ${niceDate(live.date)}. Keep what was recorded?</div>
+    <div class="btn-row"><button class="btn" data-rr="keep">Save it</button><button class="btn ghost" data-rr="drop">Discard</button></div></div>`;
+}
+$("run-resume").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-rr]");
+  if (!b) return;
+  const live = load("runLive", null);
+  try { localStorage.removeItem("runLive"); } catch (err) {}
+  if (b.dataset.rr === "keep" && live && !runs.some(function (r) { return r.id === live.id; })) storeRun(live);
+  renderRun();
+});
+
+function renderRun() {
+  renderRunResume();
+  renderCoach();
+  renderRunSetup();
+  renderRunList();
+}
+
+// Minutes of running, riding and walking in a week (added to your gym cardio)
+function runMinutes(offset, days) {
+  const b = periodBounds(offset, days);
+  return runs.reduce(function (n, r) { return n + (r.date >= b.start && r.date <= b.end ? r.secs / 60 : 0); }, 0);
+}
+
+
+// =====================================================================
+// ONE WEEK, GYM AND RUNNING TOGETHER
+// The gym planner and the running coach each know their own sessions.
+// This puts both on the same seven days, picks sensible days to run,
+// and points out clashes (heavy legs the day before a long run).
+// =====================================================================
+function addDays(key, n) { const d = new Date(key + "T00:00:00"); d.setDate(d.getDate() + n); return dateKey(d); }
+// How hard a gym session is on your legs: 2 = leg day, 1 = some legs, 0 = none
+function legLoad(name) { return /leg|lower/i.test(name || "") ? 2 : /full body/i.test(name || "") ? 1 : 0; }
+
+// The best days to run, given the days you lift. Prefers days off from the gym,
+// a weekend day for the long run, and runs spread out rather than bunched up.
+function autoRunDays(perWeek, gymDays) {
+  let best = null, bestScore = -1e9;
+  for (let mask = 0; mask < 128; mask++) {
+    const days = [];
+    for (let d = 0; d < 7; d++) if (mask & (1 << d)) days.push(d);
+    if (days.length !== perWeek) continue;
+    let score = 0;
+    days.forEach(function (d) { if (gymDays.indexOf(d) < 0) score += 3; });
+    const longDay = days.indexOf(6) >= 0 ? 6 : days.indexOf(5) >= 0 ? 5 : -1;
+    if (longDay >= 0) score += 2 + (gymDays.indexOf(longDay) < 0 ? 2 : 0);
+    let minGap = 7;
+    days.forEach(function (d, i) { const next = days[(i + 1) % days.length]; minGap = Math.min(minGap, ((next - d + 7) % 7) || 7); });
+    score += minGap * 2;
+    if (score > bestScore) { bestScore = score; best = days; }
+  }
+  return best || [];
+}
+function runDays() {
+  if (!runPlan) return [];
+  const own = (runPlan.days || []).filter(function (d) { return d >= 0 && d <= 6; });
+  return own.length === runPlan.perWeek ? own.slice().sort() : autoRunDays(runPlan.perWeek, goals.trainDays);
+}
+// Which run goes on which day: the long run (or race) on the weekend day (or, on a
+// shift pattern, the last run day of the week), the rest in order
+function placeRuns(sessions, days, weekend) {
+  const out = {};
+  if (!sessions.length || days.length < sessions.length) return out;
+  const sorted = days.slice().sort();
+  const last = sorted[sorted.length - 1];
+  const longDay = weekend === false ? last : sorted.indexOf(6) >= 0 ? 6 : sorted.indexOf(5) >= 0 ? 5 : last;
+  const rest = sorted.filter(function (d) { return d !== longDay; });
+  sessions.forEach(function (s, i) { out[i === sessions.length - 1 ? longDay : rest[i]] = s; });
+  return out;
+}
+
+// The runs of one plan week on the days of one calendar week (Monday = mondayKey).
+// Gives back { place: {weekday: session}, spare: how many runs didn't fit }.
+function runPlacement(mondayKey, sessions) {
+  if (!goals.rota) return { place: placeRuns(sessions, runDays()), spare: 0 };
+  // On a shift pattern the days you can run change from week to week
+  const r = goals.rota, all = [0, 1, 2, 3, 4, 5, 6];
+  const pos = function (d) { return cyclePos(addDays(mondayKey, d)); };
+  let cand;
+  if (r.run.length) cand = all.filter(function (d) { return r.run.indexOf(pos(d)) >= 0; });
+  else {
+    cand = all.filter(function (d) { return r.work.indexOf(pos(d)) < 0 && r.gym.indexOf(pos(d)) < 0; });      // days off with no gym
+    if (cand.length < sessions.length) cand = all.filter(function (d) { return r.work.indexOf(pos(d)) < 0; }); // any day off
+    if (cand.length < sessions.length) cand = all.slice();                                                    // any day at all
+  }
+  let keep = sessions.slice();
+  if (cand.length < keep.length) {
+    // Not enough run days this week: keep the long run, then the hard run, then easy ones
+    const rank = function (x) { return x.type === "long" || x.type === "race" ? 0 : x.type === "intervals" || x.type === "tempo" ? 1 : 2; };
+    const best = keep.slice().sort(function (a, b) { return rank(a) - rank(b); }).slice(0, cand.length);
+    keep = keep.filter(function (x) { return best.indexOf(x) >= 0; });
+  }
+  // The long run goes on the day you are most rested (the later one if it is a tie)
+  const rec = function (d) { return recovery(addDays(mondayKey, d)); };
+  const longDay = cand.slice().sort(function (a, b) { return rec(b) - rec(a) || b - a; })[0];
+  let rest = cand.filter(function (d) { return d !== longDay; });
+  const others = keep.slice(0, -1);
+  if (rest.length > others.length) {                       // more run days than runs: spread them out
+    const pick = [];
+    for (let j = 0; j < others.length; j++) pick.push(rest[Math.floor(j * rest.length / others.length)]);
+    rest = pick;
+  }
+  // Of the days left, the hard run (intervals or tempo) takes the most rested one
+  const hardAt = others.findIndex(function (x) { return x.type === "intervals" || x.type === "tempo"; });
+  const place = {};
+  if (keep.length) place[longDay] = keep[keep.length - 1];
+  if (hardAt >= 0 && rest.length) {
+    const bestDay = rest.slice().sort(function (a, b) { return rec(b) - rec(a) || a - b; })[0];
+    place[bestDay] = others[hardAt];
+    const easyDays = rest.filter(function (d) { return d !== bestDay; });
+    others.filter(function (x, i) { return i !== hardAt; }).forEach(function (x, i) { if (easyDays[i] !== undefined) place[easyDays[i]] = x; });
+  } else others.forEach(function (x, i) { if (rest[i] !== undefined) place[rest[i]] = x; });
+  return { place: place, spare: sessions.length - keep.length };
+}
+// Which week of the running plan a date falls in (1 = first)
+function planWeekOf(key) {
+  return Math.floor(Math.round((new Date(key + "T00:00:00") - new Date(runPlan.start + "T00:00:00")) / 86400000) / 7) + 1;
+}
+
+// A run of days starting at startKey (n of them), with the gym session and run
+// planned for each, as things stand "now".
+function schedule(startKey, n, now) {
+  now = now || new Date();
+  const today = dateKey(now);
+  const history = getHistory();
+  const fixed = hasFixedDays();
+  const doneOn = {};
+  history.forEach(function (w) { doneOn[w.date] = w.name; });
+
+  // One extra day in front, so a clash with the day before the first one is still seen
+  const days = [];
+  for (let i = -1; i < n; i++) {
+    const date = addDays(startKey, i), wd = weekdayOf(date);
+    days.push({ i: wd, date: date, name: DAY_NAMES[wd], dom: Number(date.slice(8)), today: date === today, past: date < today,
+                work: isWorkDate(date), off: !!goals.rota && !isWorkDate(date), shift: shiftType(date), rec: recovery(date), gym: null, run: null, warn: "" });
+  }
+  const byDate = {};
+  days.forEach(function (d) { byDate[d.date] = d; });
+
+  // Gym: what you did on past days; from today on, the next sessions of your split in order
+  const lastDate = days[days.length - 1].date;
+  const slots = [];                                       // gym days still to come, from today to the end of the range
+  for (let key = today; key <= lastDate; key = addDays(key, 1)) if (fixed && isGymDate(key) && !doneOn[key]) slots.push(key);
+  const coming = upcomingSessions(slots.length);
+  days.forEach(function (d) {
+    if (doneOn[d.date]) d.gym = { name: doneOn[d.date], done: true };
+    else if (fixed && isGymDate(d.date)) d.gym = d.past ? { name: "Gym", missed: true } : { name: coming[slots.indexOf(d.date)] };
+  });
+
+  // Running: each plan week's runs on that calendar week's run days
+  let late = 0, spare = 0;
+  if (runPlan) {
+    const weeks = planWeeks(runPlan), seen = {};
+    days.forEach(function (d) {
+      const monday = weekStartKey(d.date);
+      if (seen[monday]) return;
+      seen[monday] = true;
+      const w = planWeekOf(monday);
+      if (w < 1 || w > weeks.length) return;
+      const fit = runPlacement(monday, weeks[w - 1].sessions);
+      if (monday === weekStartKey(today)) spare = fit.spare;
+      Object.keys(fit.place).forEach(function (k) {
+        const s = fit.place[k], doneId = runPlan.done[s.id];
+        let key = addDays(monday, Number(k));
+        if (doneId) {                                       // show a finished run on the day it was actually done
+          const rec = runs.filter(function (r) { return r.id === doneId; })[0];
+          if (rec && weekStartKey(rec.date) === monday) key = rec.date;
+        }
+        const d2 = byDate[key];
+        if (!d2 || d2.run) return;
+        d2.run = { s: s, done: !!doneId, late: !doneId && d2.past };
+        if (!doneId && d2.past && monday === weekStartKey(today)) late++;
+      });
+    });
+  }
+  // Runs or rides you did outside the plan still show up
+  runs.forEach(function (r) { const d = byDate[r.date]; if (d && !d.run) d.run = { free: r, done: true }; });
+
+  // Clashes worth knowing about (only for days still to come)
+  days.forEach(function (d, i) {
+    if (d.past || !d.run || d.run.done || !d.run.s) return;
+    const type = d.run.s.type, prev = i > 0 ? days[i - 1] : null;
+    const hard = type === "intervals" || type === "tempo", big = type === "long" || type === "race";
+    if (d.gym && !d.gym.done && legLoad(d.gym.name) === 2 && (hard || big)) d.warn = "Leg day and a " + (big ? "long" : "hard") + " run on the same day. Run first, or move one of them.";
+    else if (big && prev && prev.gym && !prev.gym.missed && legLoad(prev.gym.name) === 2) prev.warn = "Leg day the day before your " + (type === "race" ? "race" : "long run") + ". Go lighter on legs, or swap the days.";
+    else if (hard && prev && prev.gym && !prev.gym.missed && legLoad(prev.gym.name) === 2) d.warn = "Fast run the day after leg day. Expect heavy legs; an easy start helps.";
+  });
+  // Shifts: a gym session or hard run on a day you are short of recovery
+  days.forEach(function (d) {
+    if (d.past || d.warn || d.rec === null) return;
+    const busy = (d.gym && !d.gym.done && !d.gym.missed) || (d.run && !d.run.done && d.run.s && d.run.s.type !== "easy");
+    if (busy && (d.rec < 50 || d.shift === "night")) d.warn = recoveryNote(d.date);
+  });
+  return { days: days.slice(1), fixed: fixed, late: late, spare: spare, monday: startKey };
+}
+// The seven days of a calendar week (offset 0 = this week, 1 = next week)
+function weekSchedule(offset, now) {
+  now = now || new Date();
+  return schedule(addDays(weekStartKey(dateKey(now)), 7 * (offset || 0)), 7, now);
+}
+function runShort(s) { return s.title.replace(/^Intervals: /, "Intervals ").replace(/^Tempo: /, "Tempo ") + (s.type === "easy" || s.type === "long" ? " " + fmtKm(s.km) : ""); }
+function dayPlanText(d) {
+  const bits = [];
+  if (d.gym && !d.gym.missed) bits.push(d.gym.name);
+  if (d.run) bits.push(d.run.s ? runShort(d.run.s) : fmtKm(d.run.free.km) + " " + RUN_TYPES[d.run.free.type].verb);
+  return bits.join(" + ");
+}
+
+function renderWeekPlan() {
+  const el = $("weekplan");
+  if (!el) return;
+  const upnext = $("upnext");
+  if (!runPlan && !hasFixedDays()) { el.hidden = true; el.innerHTML = ""; upnext.hidden = false; return; }
+  el.hidden = false;
+  upnext.hidden = true;        // this card shows the same sessions, on their days
+  // On a shift pattern a Monday-to-Sunday week means little, so show one full cycle from today
+  const r = goals.rota;
+  const span = r ? Math.max(7, Math.min(10, r.len)) : 7;
+  const wk = r ? schedule(dateKey(new Date()), span) : weekSchedule(0);
+  const item = function (text, done, cls) { return `<span class="wp-item${done ? " done" : ""}${cls ? " " + cls : ""}">${done ? "✓ " : ""}${esc(text)}</span>`; };
+  let html = `<div class="card-label">${r ? "Next " + span + " days" : "This week"} · ${esc(goals.split === "auto" ? autoSplitLabel() : SPLITS[goals.split].label)}${runPlan ? " + running" : ""}</div>`;
+  wk.days.forEach(function (d) {
+    let what = "";
+    if (d.gym) what += d.gym.missed ? item("Gym missed", false, "miss") : item(d.gym.name, d.gym.done);
+    if (d.run) what += d.run.s ? item(runShort(d.run.s), d.run.done, d.run.late ? "miss" : "run") : item(fmtKm(d.run.free.km) + " " + RUN_TYPES[d.run.free.type].verb, true, "run");
+    if (!what) what = `<span class="wp-rest">Rest</span>`;
+    html += `<div class="wp-row${d.today ? " today" : ""}${d.past ? " past" : ""}${r ? " rota" : ""}"><b>${d.name}${r ? " " + d.dom + `<i class="${d.work ? "w" : "o"}">${d.shift === "night" ? "nights" : d.work ? "work" : "off"}</i>` : ""}</b><div>${what}${d.warn ? `<div class="wp-warn">${esc(d.warn)}</div>` : ""}</div></div>`;
+  });
+  const notes = [];
+  if (wk.late) notes.push(wk.late === 1 ? "One run from earlier this week is still to do: fit it in on a rest day, or let it go." : wk.late + " runs from earlier this week are still to do. Don’t cram them: do the long run and drop the rest.");
+  if (wk.spare) notes.push((wk.spare === 1 ? "One run doesn’t" : wk.spare + " runs don’t") + " fit your run days this week, so the easy " + (wk.spare === 1 ? "one is" : "ones are") + " left out.");
+  if (!wk.fixed) notes.push(r ? "Pick your gym days in your shift pattern (Me → Goals) to see lifting on here too." : "Pick your gym days in Me → Goals to see lifting on here too.");
+  if (runPlan && !r && !(runPlan.days || []).length) notes.push("Run days were chosen to fit around the gym. Change them in the running coach.");
+  if (r) notes.unshift("Today is " + cycleLabel(cyclePos(dateKey(new Date()))) + " of your shift pattern.");
+  if (notes.length) html += `<div class="feed-meta" style="margin-top:.6rem">${notes.join(" ")}</div>`;
+  const own = workout.fromRoutine || workout.name !== upcomingSessions(1)[0];
+  html += `<button class="btn ghost" data-wp="skip" style="margin-top:.8rem">${own ? "Back to my split" : "Skip to next gym session"}</button>`;
+  el.innerHTML = html;
+}
+
+
+// =====================================================================
+// REMINDERS AND THE LOCKED-PHONE REST ALERT (installed app only)
+// The website can't send notifications when it is closed; the installed
+// app can. Reminders for the next 8 days are worked out from the week
+// above and handed to Android, and re-done whenever something changes.
+// =====================================================================
+const REMIND_IDS = [];
+for (let i = 0; i < 9; i++) REMIND_IDS.push(2000 + i);
+const REST_NOTE_ID = 900;
+
+// What to remind you about, and when. Pure working-out: nothing is sent here.
+function reminderPlan(now) {
+  now = now || new Date();
+  if (settings.remind !== "on") return [];
+  const parts = String(settings.remindAt || "17:00").split(":"), out = [];
+  const todayKey = dateKey(now);
+  const all = schedule(todayKey, 14, now).days;
+  all.forEach(function (d) {
+    if (d.date < todayKey || out.length >= 8) return;
+    const todo = [];
+    if (d.gym && !d.gym.done && !d.gym.missed) todo.push(d.gym.name);
+    if (d.run && !d.run.done && d.run.s) todo.push(runShort(d.run.s));
+    if (!todo.length) return;
+    const at = new Date(d.date + "T00:00:00");
+    at.setHours(Number(parts[0]) || 17, Number(parts[1]) || 0, 0, 0);
+    if (at.getTime() <= now.getTime() + 60000) return;
+    out.push({ id: REMIND_IDS[out.length], at: at, title: "Today: " + todo.join(" + "),
+               body: d.warn || (d.run && !d.run.done && d.run.s ? sessionLine(d.run.s) : "Your next session is ready when you are.") });
+  });
+  // Sunday nudge if the week's goal is slipping and nothing is planned for it
+  const goalDays = periodGoal();
+  const wb = periodBounds(0);
+  const doneDays = getWorkoutDates().filter(function (k) { return k >= wb.start && k <= wb.end; }).length;
+  const sunday = new Date(wb.end + "T00:00:00");
+  sunday.setHours(Number(parts[0]) || 17, Number(parts[1]) || 0, 0, 0);
+  const sundayBusy = out.some(function (r) { return dateKey(r.at) === wb.end; });
+  if (doneDays < goalDays && !sundayBusy && sunday.getTime() > now.getTime() + 60000 && out.length < REMIND_IDS.length) {
+    const short = goalDays - doneDays;
+    out.push({ id: REMIND_IDS[out.length], at: sunday, title: short === 1 ? "One session short this " + periodWord() : short + " sessions short this " + periodWord(),
+               body: "Today is the last chance to hit your goal of " + goalDays + ". Even a 20-minute version counts." });
+  }
+  return out;
+}
+
+let remindTimer = null, channelsMade = false;
+function makeChannels() {
+  if (channelsMade) return;
+  channelsMade = true;
+  nativeCall("LocalNotifications", "createChannel", { id: "reminders", name: "Workout reminders", description: "A nudge on your training days", importance: 3, visibility: 1 }).catch(function () {});
+  nativeCall("LocalNotifications", "createChannel", { id: "rest", name: "Rest timer", description: "Tells you when your rest is over", importance: 5, visibility: 1, vibration: true }).catch(function () {});
+}
+function syncReminders() {
+  if (!NATIVE) return Promise.resolve([]);
+  makeChannels();
+  const list = reminderPlan(new Date());
+  const backup = backupReminder(new Date());
+  if (backup) list.push(backup);
+  return nativeCall("LocalNotifications", "cancel", { notifications: REMIND_IDS.concat([2100]).map(function (id) { return { id: id }; }) })
+    .catch(function () {})
+    .then(function () {
+      if (!list.length) return list;
+      return nativeCall("LocalNotifications", "schedule", { notifications: list.map(function (r) {
+        return { id: r.id, title: r.title, body: r.body, channelId: "reminders", schedule: { at: r.at.toISOString(), allowWhileIdle: true } };
+      }) }).then(function () { return list; });
+    }).catch(function (err) { nativeNote = "Reminders: " + (err && err.message ? err.message : "could not be set"); return []; });
+}
+// Many things change the week (finishing a workout, a new plan...), so wait a moment and do it once
+function queueReminders() {
+  if (!NATIVE) return;
+  clearTimeout(remindTimer);
+  remindTimer = setTimeout(syncReminders, 1500);
+}
+
+// Rest timer: if you lock the phone or switch app mid-rest, Android rings when the rest is over
+function restNotify(on) {
+  if (!NATIVE) return;
+  makeChannels();
+  nativeCall("LocalNotifications", "cancel", { notifications: [{ id: REST_NOTE_ID }] }).catch(function () {});
+  if (!on || restTimer === null || restEnd - Date.now() < 2000) return;
+  nativeCall("LocalNotifications", "schedule", { notifications: [{ id: REST_NOTE_ID, title: "Rest over", body: "Time for your next set.", channelId: "rest",
+    schedule: { at: new Date(restEnd).toISOString(), allowWhileIdle: true } }] }).catch(function () {});
+}
+document.addEventListener("visibilitychange", function () {
+  restNotify(document.visibilityState === "hidden");
+  if (document.visibilityState === "visible") queueReminders();
+});
+
+
+// =====================================================================
+// SHIFT-AWARE TRAINING
+// Knowing your rota, the app can guess how recovered you are on any day:
+// worst on the first day off after night shifts, best a few days into
+// your time off. That guess lightens sessions, picks the day for your
+// long run, and shows on the schedule.
+// =====================================================================
+// "night", "day" or "off" for a date (null with no shift pattern)
+function shiftType(key) {
+  const r = goals.rota;
+  if (!r) return null;
+  const p = cyclePos(key);
+  if (r.work.indexOf(p) < 0) return "off";
+  return (r.nights || []).indexOf(p) >= 0 ? "night" : "day";
+}
+// How recovered you are likely to be, 0 to 100 (null with no shift pattern).
+// A rule of thumb, not a measurement: it knows your shifts, not how you slept.
+function recovery(key) {
+  if (!goals.rota) return null;
+  const type = shiftType(key);
+  if (type === "off") {
+    let off = 0, k = key;
+    while (off < 14 && shiftType(k) === "off") { off++; k = addDays(k, -1); }   // off = 1 on the first day off
+    const afterNights = shiftType(k) === "night";
+    if (off === 1) return afterNights ? 40 : 70;
+    if (off === 2) return afterNights ? 75 : 95;
+    return 100;
+  }
+  let run = 0, nights = 0, k2 = addDays(key, -1);                                // shifts in a row before today
+  while (run < 14 && shiftType(k2) !== "off") { run++; if (shiftType(k2) === "night") nights++; k2 = addDays(k2, -1); }
+  return Math.max(30, (type === "night" ? 55 : 75) - run * 6 - nights * 2);
+}
+function recoveryNote(key) {
+  const rec = recovery(key), type = shiftType(key);
+  if (rec === null) return "";
+  if (type === "off" && rec < 50) return "First day off after nights. Keep it light: sleep comes first.";
+  if (type === "night") return "Night shift today. Train before it and keep it short.";
+  if (type === "day" && rec < 60) return "Several shifts in a row. A shorter session is fine.";
+  return "";
+}
+// The cycle days you are likely to be freshest on, best first (for choosing gym days)
+function freshestDays() {
+  const r = goals.rota;
+  if (!r) return [];
+  const list = [];
+  for (let i = 0; i < r.len; i++) list.push({ i: i, rec: recovery(addDays(r.start, i)) });
+  return list.filter(function (d) { return d.rec >= 90; }).map(function (d) { return d.i; });
+}
+// What your shifts suggest for "How do you feel today?" when you haven't said
+function shiftReadiness() {
+  const rec = recovery(dateKey(new Date()));
+  return rec !== null && rec < 50 ? "tired" : null;
+}
+
+
+// =====================================================================
+// RACE YOUR PAST SELF ("ghost")
+// Start a run where you have started one before and the app finds your
+// best run from there. As you go it compares where you are with where
+// that run was at the same distance.
+// =====================================================================
+// A past run as distance-against-time, ready to compare with
+function ghostData(r) {
+  const pts = decodeRoute(r.route);
+  if (pts.length < 4) return null;
+  let total = 0;
+  const cum = pts.map(function (p, i) { if (i) total += haversine(pts[i - 1][0], pts[i - 1][1], p[0], p[1]); return total; });
+  let t = decodeTimes(r.rt);
+  if (t.length !== pts.length) t = cum.map(function (d) { return total > 0 ? r.secs * d / total : 0; });
+  if (total < 0.3) return null;
+  return { id: r.id, date: r.date, pts: pts, cum: cum, t: t, total: total, secs: t[t.length - 1] };
+}
+// Your quickest past run of this kind that started within 150 m of here
+function ghostFor(lat, lng, type) {
+  let best = null;
+  runs.forEach(function (r) {
+    if (r.type !== type || !r.route || r.route.length < 8) return;
+    if (haversine(lat, lng, r.route[0] / 1e5, r.route[1] / 1e5) > 0.15) return;
+    const g = ghostData(r);
+    if (g && (!best || g.secs / g.total < best.secs / best.total)) best = g;
+  });
+  return best;
+}
+// How long the ghost took to reach a distance, and how far it had got by a time
+function ghostTimeAt(g, km) {
+  if (km >= g.total) return g.secs;
+  let i = 0;
+  while (i + 1 < g.cum.length && g.cum[i + 1] < km) i++;
+  const span = g.cum[i + 1] - g.cum[i];
+  return span > 0 ? g.t[i] + (g.t[i + 1] - g.t[i]) * (km - g.cum[i]) / span : g.t[i];
+}
+function ghostDistAt(g, secs) {
+  if (secs >= g.secs) return g.total;
+  let i = 0;
+  while (i + 1 < g.t.length && g.t[i + 1] < secs) i++;
+  const span = g.t[i + 1] - g.t[i];
+  return span > 0 ? g.cum[i] + (g.cum[i + 1] - g.cum[i]) * (secs - g.t[i]) / span : g.cum[i];
+}
+// Seconds you are ahead (+) or behind (-) at your current distance
+function ghostGap(now) {
+  const g = trk.ghost;
+  if (!g || trk.dist > g.total || trk.dist < 0.05) return null;
+  return ghostTimeAt(g, trk.dist) - trackElapsed(now);
+}
+function ghostWords(gap) {
+  const s = Math.round(Math.abs(gap));
+  if (s < 3) return "Level with your best.";
+  return (s >= 60 ? sayDur(s) : s + " seconds") + (gap > 0 ? " ahead of your best." : " behind your best.");
+}
+function ghostShort(gap, now) {
+  const g = trk.ghost, s = Math.round(Math.abs(gap));
+  const metres = Math.round(Math.abs(ghostDistAt(g, trackElapsed(now)) - trk.dist) * 1000);
+  return s < 3 ? "Level with your best" : (s >= 60 ? runClock(s) : s + " s") + (gap > 0 ? " ahead" : " behind") + " · " + metres + " m";
+}
+// Still on the ghost's route? Five points in a row more than 120 m from it ends the race.
+function ghostCheck(lat, lng) {
+  const g = trk.ghost;
+  if (!g || trk.dist < 0.2) return;
+  let near = Infinity;
+  for (let i = 0; i < g.pts.length; i++) near = Math.min(near, haversine(lat, lng, g.pts[i][0], g.pts[i][1]));
+  trk.ghostOff = near > 0.12 ? (trk.ghostOff || 0) + 1 : 0;
+  if (trk.ghostOff >= 5) { trk.ghost = null; runSay("This is a different route, so the race with your best is off."); }
+}
+// At the finish: how you did against it, if you covered its distance
+function ghostResult(marks) {
+  const g = trk.ghost;
+  if (!g || !marks.length || marks[marks.length - 1][0] < g.total * 0.97) return null;
+  let i = 0;
+  while (i + 1 < marks.length && marks[i + 1][0] < g.total) i++;
+  const a = marks[i], b = marks[Math.min(i + 1, marks.length - 1)];
+  const mine = b[0] > a[0] ? a[1] + (b[1] - a[1]) * Math.min(1, (g.total - a[0]) / (b[0] - a[0])) : a[1];
+  return { secs: Math.round(g.secs - mine), date: g.date };
+}
+
+
+// =====================================================================
+// TALK TO IT
+// "eighty for eight" logs 80 kg x 8 on the next set. The clever part is
+// turning spoken words into numbers; the listening itself is done by the
+// phone (and needs a small add-on in the installed app).
+// =====================================================================
+const NUM_WORDS = { zero: 0, oh: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+  thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50,
+  sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
+// "eighty two point five for eight" -> "82.5 for 8"
+function wordsToDigits(text) {
+  const words = String(text || "").toLowerCase().replace(/[-,]/g, " ").replace(/\s+/g, " ").trim().split(" ");
+  const out = [];
+  let cur = null, frac = null;                          // the number being built, and digits after "point"
+  const flush = function () { if (cur !== null) { out.push(String(cur) + (frac !== null ? "." + frac : "")); cur = null; frac = null; } };
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i], n = NUM_WORDS[w];
+    if (/^\d+(\.\d+)?$/.test(w)) { flush(); out.push(w); continue; }
+    if (frac !== null && n !== undefined && n < 10) { frac += String(n); continue; }
+    if (n !== undefined) {
+      if (cur === null) cur = n;
+      else if (n < 10 && cur % 10 === 0 && cur >= 20) cur += n;          // "eighty" + "two"
+      else if (cur >= 100 && cur % 100 === 0) cur += n;                  // "hundred" + "ten"
+      else if (cur >= 100 && n < 10 && cur % 10 === 0) cur += n;         // "hundred twenty" + "five"
+      else { flush(); cur = n; }
+      continue;
+    }
+    if (w === "hundred") { cur = (cur === null || cur === 0 ? 1 : cur) * 100; continue; }
+    if (w === "a" && words[i + 1] === "hundred") continue;
+    if (w === "and" && cur !== null && (words[i + 1] === "a" && words[i + 2] === "half")) { cur += 0.5; i += 2; continue; }
+    if (w === "and" && cur !== null && cur >= 100 && NUM_WORDS[words[i + 1]] !== undefined) continue;   // "a hundred and ten"
+    if (w === "point" && cur !== null && NUM_WORDS[words[i + 1]] !== undefined) { frac = ""; continue; }
+    flush();
+    out.push(w);
+  }
+  flush();
+  return out.join(" ");
+}
+// What did they mean? { kind: "set", weight (number, 0 for bodyweight, or null = leave as it is), reps (or null) }
+// or { kind: "cmd", cmd: "done" | "skip" | "next" | "finish" }, or null if it made no sense.
+function parseSetSpeech(text) {
+  const t = wordsToDigits(text).replace(/kilograms?|kilos?|kgs?|kg|pounds?|lbs?/g, " kg ").replace(/\s+/g, " ").trim();
+  if (!t) return null;
+  if (/^(same|same again|again|same as last time)$/.test(t)) return { kind: "set", weight: null, reps: null };
+  if (/^(done|tick|log it|that's it|finished set)$/.test(t)) return { kind: "cmd", cmd: "done" };
+  if (/skip( the)? rest|^skip$/.test(t)) return { kind: "cmd", cmd: "skip" };
+  if (/what'?s next|^next$|what is next/.test(t)) return { kind: "cmd", cmd: "next" };
+  if (/finish( the)? workout/.test(t)) return { kind: "cmd", cmd: "finish" };
+  let m = /(?:body ?weight|no weight)\D*(\d+)/.exec(t);
+  if (m) return { kind: "set", weight: 0, reps: Number(m[1]) };
+  m = /(\d+(?:\.\d+)?)(?: kg)? (?:for|by|x|times|at) (\d+)(?! ?kg)/.exec(t);
+  if (m) return { kind: "set", weight: Number(m[1]), reps: Number(m[2]) };
+  m = /(\d+) (?:reps?|times) (?:at|of|with|on) (\d+(?:\.\d+)?)/.exec(t);
+  if (m) return { kind: "set", weight: Number(m[2]), reps: Number(m[1]) };
+  m = /(\d+(?:\.\d+)?) kg (\d+)/.exec(t);
+  if (m) return { kind: "set", weight: Number(m[1]), reps: Number(m[2]) };
+  m = /^(\d+) reps?$/.exec(t);
+  if (m) return { kind: "set", weight: null, reps: Number(m[1]) };
+  m = /^(\d+(?:\.\d+)?) kg$/.exec(t);
+  if (m) return { kind: "set", weight: Number(m[1]), reps: null };
+  m = /^(\d+(?:\.\d+)?) (\d+)$/.exec(t);
+  if (m) return { kind: "set", weight: Number(m[1]), reps: Number(m[2]) };
+  return null;
+}
+// Speak a short line (workout voice, separate from the run voice)
+function coachSay(text) {
+  if (NATIVE) { nativeCall("TextToSpeech", "speak", { text: text, lang: "en-GB", rate: 1.0, pitch: 1.0, volume: 1.0, queueStrategy: 1 }).catch(function () {}); return; }
+  try {
+    if (typeof speechSynthesis === "undefined" || typeof SpeechSynthesisUtterance === "undefined") return;
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "en-GB";
+    speechSynthesis.speak(u);
+  } catch (err) { /* optional */ }
+}
+// Acts on what was heard. Gives back the words to show and say.
+function voiceApply(heard) {
+  const p = parseSetSpeech(heard);
+  if (!p) return { ok: false, say: "Sorry, I didn’t catch a set in that. Try “eighty for eight”." };
+  if (p.kind === "cmd") {
+    if (p.cmd === "skip") { stopRest(); return { ok: true, say: "Rest skipped." }; }
+    if (p.cmd === "finish") return { ok: true, say: "Tap Finish workout when you’re ready.", finish: true };
+    if (p.cmd === "next") {
+      const t0 = focusTarget();
+      return { ok: true, say: t0 ? "Next is " + workout.exercises[t0.ei].name + "." : "Every set is ticked." };
+    }
+  }
+  const t = focusTarget();
+  if (!t) return { ok: false, say: "Every set is already ticked." };
+  const ex = workout.exercises[t.ei], s = ex.sets[t.si];
+  if (isCardio(ex.name)) return { ok: false, say: "Voice logging works for weights and reps, not cardio yet." };
+  if (p.kind === "set") {
+    if (p.weight !== null) {
+      if (p.weight < 0 || p.weight > 600) return { ok: false, say: "That weight doesn’t sound right." };
+      s.weight = p.weight > 0 ? Math.round(fromDisp(p.weight) * 1000) / 1000 : "";
+    }
+    if (p.reps !== null) {
+      if (p.reps < 1 || p.reps > 100) return { ok: false, say: "That number of reps doesn’t sound right." };
+      s.reps = String(p.reps);
+    }
+  }
+  if (String(s.reps).trim() === "") s.reps = String(parseInt(ex.target) || "");
+  const said = ((parseFloat(s.weight) || 0) > 0 ? fmtW(s.weight) + " " + (unit() === "kg" ? "kilos" : "pounds") + " for " : "") + s.reps + ((parseFloat(s.weight) || 0) > 0 ? "" : " reps");
+  completeSet({ ex: ex, s: s, t: t });
+  return { ok: true, say: "Logged " + said + "." };
+}
+function voiceAvailable() {
+  if (NATIVE) return !!(window.Capacitor.Plugins && window.Capacitor.Plugins.SpeechRecognition);
+  return typeof window !== "undefined" && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+}
+// Listens once and gives back the list of things it might have heard
+function listenOnce() {
+  if (NATIVE) {
+    return nativeCall("SpeechRecognition", "requestPermissions", {}).catch(function () {})
+      .then(function () { return nativeCall("SpeechRecognition", "start", { language: "en-GB", maxResults: 4, prompt: "Say your set, like eighty for eight", partialResults: false, popup: true }); })
+      .then(function (res) { return (res && res.matches) || []; });
+  }
+  return new Promise(function (resolve, reject) {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { reject(new Error("no speech recognition")); return; }
+    const rec = new SR();
+    rec.lang = "en-GB"; rec.maxAlternatives = 4; rec.interimResults = false;
+    let got = false;
+    rec.onresult = function (e) { got = true; const alts = []; for (let i = 0; i < e.results[0].length; i++) alts.push(e.results[0][i].transcript); resolve(alts); };
+    rec.onerror = function (e) { if (!got) reject(new Error(e.error || "could not listen")); };
+    rec.onend = function () { if (!got) resolve([]); };
+    rec.start();
+  });
+}
+function voiceLog() {
+  const status = $("fo-voice");
+  if (status) status.textContent = "Listening…";
+  return listenOnce().then(function (alts) {
+    // The phone offers a few guesses: use the first that makes sense
+    let pick = alts.filter(function (a) { return parseSetSpeech(a); })[0] || alts[0] || "";
+    if (!pick) { if ($("fo-voice")) $("fo-voice").textContent = "Didn’t hear anything. Tap the mic and try again."; return null; }
+    const res = voiceApply(pick);
+    coachSay(res.say);
+    if (focusOn) renderFocus();
+    if ($("fo-voice")) $("fo-voice").textContent = "“" + pick + "” → " + res.say;
+    return res;
+  }, function (err) {
+    if ($("fo-voice")) $("fo-voice").textContent = "Couldn’t listen: " + (err && err.message ? err.message : "microphone not available") + ".";
+    return null;
+  });
+}
+
+
+// =====================================================================
+// THE PHONE COUNTS YOUR REPS (beta)
+// With the phone strapped to the bar, or in a pocket that moves with the
+// lift, its motion sensor feels each rep. The app counts them and notices
+// when they slow down, which is the sign you are near your limit.
+// This is new and needs tuning on real lifts: treat the numbers as a guide.
+// =====================================================================
+function newRepCounter() {
+  return { g: null, a: 0, v: 0, lastT: 0, side: 0, first: 0, reps: [], peak: 0, lastRepT: 0, lastMoveT: 0, startT: 0 };
+}
+// One sensor reading: t in seconds, x/y/z = acceleration including gravity (m/s²).
+// Gives back true when this reading completed a rep.
+function repFeed(rc, t, x, y, z) {
+  if (!rc.g) { rc.g = [x, y, z]; rc.lastT = t; rc.startT = t; rc.lastMoveT = t; return false; }
+  const dt = Math.min(0.1, Math.max(0.001, t - rc.lastT));
+  rc.lastT = t;
+  // Gravity changes slowly; movement changes quickly. Follow gravity slowly and what is left is the movement.
+  const kg = dt / (3 + dt);
+  rc.g = [rc.g[0] + (x - rc.g[0]) * kg, rc.g[1] + (y - rc.g[1]) * kg, rc.g[2] + (z - rc.g[2]) * kg];
+  const gm = Math.sqrt(rc.g[0] * rc.g[0] + rc.g[1] * rc.g[1] + rc.g[2] * rc.g[2]) || 9.81;
+  const up = ((x - rc.g[0]) * rc.g[0] + (y - rc.g[1]) * rc.g[1] + (z - rc.g[2]) * rc.g[2]) / gm;   // movement along up/down
+  rc.a += (up - rc.a) * (dt / (0.12 + dt));                 // smooth out jitter
+  rc.v = (rc.v + rc.a * dt) * Math.exp(-dt / 1.2);          // speed, slowly forgetting so errors don't build up
+  const TH = 0.1;                                            // m/s: slower than this is "not moving"
+  if (Math.abs(rc.v) > TH) rc.lastMoveT = t;
+  rc.peak = Math.max(rc.peak, Math.abs(rc.v));
+  const side = rc.v > TH ? 1 : rc.v < -TH ? -1 : 0;
+  if (side === 0 || side === rc.side) return false;
+  // Speed has swung to the other direction. A rep is one swing out and one swing back,
+  // so count it each time the swing goes against the direction the set started in.
+  if (rc.side === 0 && !rc.first) { rc.first = side; rc.side = side; rc.lastRepT = t; return false; }
+  rc.side = side;
+  if (side === rc.first) return false;
+  const took = t - rc.lastRepT;
+  rc.lastRepT = t;
+  if (took < (rc.reps.length ? 0.6 : 0.3)) { rc.peak = 0; return false; }   // too quick to be a rep: a knock or a re-grip
+  rc.reps.push({ secs: Math.round(took * 100) / 100, peak: Math.round(rc.peak * 100) / 100 });
+  rc.peak = 0;
+  return true;
+}
+// How much slower the last rep was than your best early one (0.3 = 30% slower)
+function repSlowdown(rc) {
+  if (rc.reps.length < 3) return null;
+  const early = Math.max(rc.reps[0].peak, rc.reps[1].peak), last = rc.reps[rc.reps.length - 1].peak;
+  return early > 0 ? Math.max(0, Math.round((1 - last / early) * 100) / 100) : null;
+}
+function repAdvice(rc) {
+  const slow = repSlowdown(rc);
+  if (slow === null) return "";
+  if (slow >= 0.4) return "That last rep was a grind: you were at your limit.";
+  if (slow >= 0.25) return "Slowing down: about one rep left in the tank.";
+  if (slow >= 0.12) return "About two reps left in the tank.";
+  return "Still moving fast: three or more left. Add weight next set.";
+}
+
+let repRC = null, repOn = false, repDoneTimer = null;
+function repMotion(e) {
+  const a = e.accelerationIncludingGravity;
+  if (!repRC || !a || a.x === null) return;
+  const t = (e.timeStamp || Date.now()) / 1000;
+  if (repFeed(repRC, t, a.x, a.y, a.z)) { ivBeep(990, 60); repShow(); }
+}
+function repShow() {
+  const el = $("fo-reps");
+  if (!el || !repRC) return;
+  el.textContent = repRC.reps.length ? repRC.reps.length + (repRC.reps.length === 1 ? " rep" : " reps") + " counted" : "Counting: start your set";
+}
+// Three seconds of stillness after at least two reps = the set is over
+function repWatch() {
+  if (!repOn || !repRC) return;
+  const now = (typeof performance !== "undefined" ? performance.now() : Date.now()) / 1000;
+  if (repRC.reps.length >= 2 && repRC.lastT - repRC.lastMoveT > 3) repFinish();
+}
+function repFinish() {
+  if (!repRC || !repRC.reps.length) return null;
+  const n = repRC.reps.length, advice = repAdvice(repRC);
+  const box = $("fo-b");
+  if (box) box.value = String(n);
+  coachSay(n + " reps. " + advice);
+  const el = $("fo-reps");
+  if (el) el.textContent = n + " reps counted. " + advice + " Check the number, then tap Done.";
+  repRC = newRepCounter();
+  return { reps: n, advice: advice };
+}
+function repToggle() {
+  if (repOn) { repStop(); if (focusOn) renderFocus(); return; }
+  const begin = function () {
+    repOn = true; repRC = newRepCounter();
+    window.addEventListener("devicemotion", repMotion);
+    repDoneTimer = setInterval(repWatch, 500);
+    if (focusOn) renderFocus();
+  };
+  try {
+    if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+      DeviceMotionEvent.requestPermission().then(function (ans) { if (ans === "granted") begin(); }).catch(function () {});
+    } else begin();
+  } catch (err) { /* no motion sensor */ }
+}
+function repStop() {
+  repOn = false; repRC = null;
+  try { window.removeEventListener("devicemotion", repMotion); } catch (err) {}
+  clearInterval(repDoneTimer);
+}
+function repAvailable() { return typeof window !== "undefined" && typeof window.DeviceMotionEvent !== "undefined"; }
+
+
+// =====================================================================
+// AI COACH
+// Sends a short summary of your training to Claude (Anthropic's AI) with
+// your question, and shows the answer. It uses your own API key, kept on
+// this phone only and never put in backups. Each question costs a small
+// amount on your Anthropic account.
+// =====================================================================
+const AI_MODELS = [["claude-haiku-5-5", "Quick"], ["claude-sonnet-5-5", "Thorough"]];
+let aiChat = [];           // this conversation: [{ role: "user" | "assistant", content }]
+let aiBusy = false;
+function aiKey() { try { return localStorage.getItem("aiKey") || ""; } catch (err) { return ""; } }
+function aiModel() { return AI_MODELS.some(function (m) { return m[0] === settings.aiModel; }) ? settings.aiModel : AI_MODELS[0][0]; }
+
+// Everything the coach is told about you, as plain text
+function coachContext() {
+  const L = [];
+  const today = dateKey(new Date());
+  L.push("Today: " + today + " (" + DAY_FULL[weekdayOf(today)] + "). Units: " + unit() + ", " + distUnit() + ".");
+  L.push("Goal: " + goals.goal + ". Experience: " + goals.experience + ". Session length: " + goals.minutes + " min. Split: " + (goals.split === "auto" ? autoSplitLabel() : SPLITS[goals.split].label) + ".");
+  if (goals.focus.length) L.push("Focus muscles: " + goals.focus.join(", ") + ".");
+  if (goals.avoid.length) L.push("Avoiding (injury or niggle): " + goals.avoid.join(", ") + ".");
+  if (goals.rota) {
+    const r = goals.rota;
+    L.push("Shift pattern: " + r.len + "-day cycle, works days " + r.work.map(function (d) { return d + 1; }).join(",") + (r.nights && r.nights.length ? " (nights on days " + r.nights.map(function (d) { return d + 1; }).join(",") + ")" : "") +
+      ". Today is " + cycleLabel(cyclePos(today)) + ". Gym on: " + r.gym.map(cycleLabel).join(", ") + ". Estimated recovery today: " + recovery(today) + "/100.");
+  } else if (goals.trainDays.length) L.push("Trains on: " + goals.trainDays.map(function (d) { return DAY_NAMES[d]; }).join(", ") + ".");
+  else L.push("Aims for " + goals.days + " gym days a week, no fixed days.");
+  const body = load("bodyLog", []);
+  if (body.length) L.push("Bodyweight: " + fmtW(body[body.length - 1].weight) + " " + unit() + (body.length > 1 ? " (was " + fmtW(body[0].weight) + " on " + body[0].date + ")" : "") + ".");
+  L.push("Streak: " + streakText(weekStreak()) + ". This " + periodWord() + ": " + weekStats(0).workouts + " workouts, " + weekStats(0).sets + " sets. Last " + periodWord() + ": " + weekStats(1).workouts + " workouts, " + weekStats(1).sets + " sets.");
+  const hist = getHistory().slice(-10);
+  if (hist.length) {
+    L.push("Recent gym sessions (oldest first):");
+    hist.forEach(function (w) {
+      L.push("- " + w.date + " " + w.name + (w.feel ? " (rated " + w.feel + "/5)" : "") + (w.memo ? " note: " + w.memo : "") + ": " +
+        w.exercises.slice(0, 8).map(function (ex) {
+          if (isCardio(ex.name)) return ex.name + " " + ex.sets.map(cardioText).join("+");
+          let best = null;
+          ex.sets.forEach(function (s) { const kg = parseFloat(s.weight) || 0; if (!best || kg > best.kg) best = { kg: kg, reps: parseInt(s.reps) || 0 }; });
+          return ex.name + " " + ex.sets.length + "x" + (best && best.kg ? fmtW(best.kg) + unit() + "x" + best.reps : (best ? best.reps : 0) + " reps");
+        }).join("; "));
+    });
+  } else L.push("No gym sessions logged yet.");
+  if (runPlan) L.push("Running plan: " + RUN_GOALS[runPlan.goal].label + ", " + runPlan.perWeek + " runs a week, week " + planWeekNow() + " of " + RUN_GOALS[runPlan.goal].weeks + ", current 5K " + runClock(runPlan.t5) + ".");
+  const rr = runs.slice(-6);
+  if (rr.length) L.push("Recent runs: " + rr.map(function (r) { return r.date + " " + r.type + " " + fmtKm(r.km) + " in " + runClock(r.secs) + (r.type === "ride" || !r.km ? "" : " (" + paceStr(r.secs / r.km) + paceUnit() + ")"); }).join("; ") + ".");
+  const days = schedule(today, 8).days.filter(function (d) { return d.gym || d.run; }).map(function (d) { return d.name + " " + d.dom + ": " + dayPlanText(d) + (d.warn ? " [" + d.warn + "]" : ""); });
+  if (days.length) L.push("Planned next 8 days: " + days.join("; ") + ".");
+  return L.join("\n");
+}
+const AI_SYSTEM = "You are the coach inside BTB (Beyond The Body), a personal strength and running app. " +
+  "Answer the user's question using the training summary provided. Be specific to their numbers, practical and brief: a few short paragraphs or a short list, in plain English. " +
+  "If the summary doesn't hold what you need, say so. You are not a doctor: for pain, injury or health worries, suggest seeing a professional. Never invent sessions or numbers that are not in the summary.";
+
+// Asks the coach. Gives back the answer text, or throws an Error with a plain message.
+function askCoach(question) {
+  const key = aiKey();
+  if (!key) return Promise.reject(new Error("Add your API key first."));
+  const messages = aiChat.slice(-6).concat([{ role: "user", content: question }]);
+  return fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+    body: JSON.stringify({ model: aiModel(), max_tokens: 700, system: AI_SYSTEM + "\n\nTRAINING SUMMARY\n" + coachContext(), messages: messages })
+  }).then(function (res) {
+    return res.json().catch(function () { return {}; }).then(function (data) {
+      if (!res.ok) {
+        const why = data && data.error && data.error.message ? data.error.message : "error " + res.status;
+        throw new Error(res.status === 401 ? "That API key was not accepted. Check it in the coach settings." : res.status === 429 ? "The coach is busy or your account is out of credit. Try again shortly." : "The coach couldn’t answer (" + why + ").");
+      }
+      const text = (data.content || []).filter(function (b) { return b.type === "text"; }).map(function (b) { return b.text; }).join("\n").trim();
+      if (!text) throw new Error("The coach sent back an empty answer.");
+      aiChat.push({ role: "user", content: question }, { role: "assistant", content: text });
+      return text;
+    });
+  }, function () { throw new Error("Couldn’t reach the coach. Check your internet connection."); });
+}
+// Shows the coach's words safely: your text can't break the page, **bold** and new lines work
+function aiHtml(text) {
+  return esc(text).replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/^\s*[-•]\s+/gm, "• ").replace(/\n/g, "<br>");
+}
+function openCoach(note) {
+  if (!aiKey()) {
+    openSheet(`<div class="card-label">AI coach</div><div class="big">Ask about your training</div>
+      <div class="feed-meta" style="margin:.6rem 0">The coach reads a summary of your sessions, runs, shifts and goals, then answers in plain English: “review my last cycle”, “why has my bench stalled?”, “what should I change?”.</div>
+      <div class="card-label" style="margin-top:.8rem">It needs your own Anthropic API key</div>
+      <div class="feed-meta">1. Go to console.anthropic.com and create an account.<br>2. Add a little credit (it is pay as you go; each question costs a small amount).<br>3. Create an API key and paste it here.</div>
+      <input type="password" class="inp-date" id="ai-key" placeholder="sk-ant-…" autocomplete="off" style="margin-top:.6rem">
+      <div class="feed-meta" id="ai-msg" style="margin-top:.4rem">${esc(note || "The key stays on this phone and is never put in backups. Your training summary is sent to Anthropic to get each answer.")}</div>
+      <button class="btn" data-run="ai-save">Save key</button><button class="btn ghost" data-a="add-close">Not now</button>`);
+    return;
+  }
+  const quick = ["Review my last " + periodWord(), "What should I change?", "Am I recovering enough?", "Where am I strongest and weakest?"];
+  openSheet(`<div class="card-label">AI coach</div>
+    <div class="ai-log" id="ai-log">${aiChat.length ? aiChat.map(function (m) { return `<div class="ai-msg ${m.role === "user" ? "me" : "it"}">${aiHtml(m.content)}</div>`; }).join("") : `<div class="feed-meta">Ask anything about your training. The coach can see your recent sessions, runs, shifts and plan.</div>`}${aiBusy ? `<div class="ai-msg it">Thinking…</div>` : ""}</div>
+    ${note ? `<div class="feed-meta" style="color:#e0b050">${esc(note)}</div>` : ""}
+    <div class="chips" style="margin:.6rem 0">${quick.map(function (q) { return `<button class="chip" data-run="ai-quick" data-q="${esc(q)}">${esc(q)}</button>`; }).join("")}</div>
+    <textarea class="set-input note" id="ai-q" rows="2" maxlength="400" placeholder="Your question"></textarea>
+    <button class="btn" data-run="ai-ask"${aiBusy ? " disabled" : ""}>Ask</button>
+    <div class="chips" style="margin-top:.6rem">${AI_MODELS.map(function (m) { return `<button class="chip${aiModel() === m[0] ? " on" : ""}" data-run="ai-model" data-v="${m[0]}">${m[1]}</button>`; }).join("")}
+      <button class="chip" data-run="ai-forget">Remove key</button></div>
+    <button class="btn ghost" data-a="add-close">Close</button>`);
+  const log = $("ai-log");
+  if (log) log.scrollTop = log.scrollHeight;
+}
+function coachSend(question) {
+  question = String(question || "").trim();
+  if (!question || aiBusy) return Promise.resolve(null);
+  aiBusy = true;
+  aiChat.push({ role: "user", content: question });      // shown straight away; replaced by the real pair when the answer lands
+  openCoach();
+  aiChat.pop();
+  return askCoach(question).then(function (text) { aiBusy = false; openCoach(); return text; },
+    function (err) { aiBusy = false; openCoach(err.message); return null; });
+}
+$("sheet").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-run]");
+  if (!b) return;
+  const a = b.dataset.run;
+  if (a === "ai-save") {
+    const v = String(($("ai-key") || {}).value || "").trim();
+    if (v.length < 20) { $("ai-msg").textContent = "That doesn’t look like a full API key."; return; }
+    try { localStorage.setItem("aiKey", v); } catch (err) {}
+    openCoach();
+  }
+  if (a === "ai-ask") coachSend(($("ai-q") || {}).value);
+  if (a === "ai-quick") coachSend(b.dataset.q);
+  if (a === "ai-model") { settings.aiModel = b.dataset.v; save("settings", settings); openCoach(); }
+  if (a === "ai-forget" && confirm("Remove your API key from this phone?")) { try { localStorage.removeItem("aiKey"); } catch (err) {} aiChat = []; openCoach(); }
+});
+
+
 function renderAll() {
+  renderRun();
   renderEquipment();
   renderGoals();
   renderTargets();
@@ -6689,7 +9096,7 @@ maybeWelcome();   // brand-new here? walk through a quick setup
 
 // Lets the app install to your home screen and open offline.
 // (Browsers only allow this on https:// or localhost.)
-if ("serviceWorker" in navigator &&
+if (!NATIVE && "serviceWorker" in navigator &&
     (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
   navigator.serviceWorker.register("sw.js").catch(function () {});
 }

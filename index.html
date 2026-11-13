@@ -74,11 +74,16 @@
         <div class="hero-label" id="hero-label"></div>
         <div class="big hero-title" id="next-workout">Push Day</div>
         <div class="hero-meta" id="next-meta"></div>
-        <button class="btn" data-action="start-workout">Start</button>
+        <button class="btn" id="hero-btn" data-action="start-workout">Start</button>
+        <div id="hero-extra"></div>
       </div>
     </div>
 
     <div class="card upnext" id="upnext"></div>
+    <div class="card" id="weekplan" hidden></div>
+    <button type="button" class="card coach-row" data-action="coach">
+      <span class="coach-ic">✦</span><span class="coach-txt"><b>Ask your coach</b><span>Questions about your training, answered from your own numbers</span></span>
+    </button>
 
     <h2 class="alt-h">Feeling like something different?</h2>
     <div class="alt-tiles" id="alt-tiles">
@@ -108,16 +113,6 @@
       <button class="btn" data-action="export-backup">Download backup</button>
     </div>
 
-    <div class="tiles2">
-      <div class="card">
-        <div class="card-label">Streak</div>
-        <div class="big" id="streak">0 days</div>
-      </div>
-      <button type="button" class="card" data-action="gym" aria-label="Your gym — set up your equipment">
-        <div class="card-label">Your gym</div>
-        <div class="big" id="home-equip">0 items</div>
-      </button>
-    </div>
   </section>
 
   <section class="screen" id="workout">
@@ -142,6 +137,17 @@
     <div id="workout-list"></div>
   </section>
 
+  <section class="screen" id="run">
+    <h1>Run</h1>
+    <p class="sub">Track runs, rides and walks with GPS.</p>
+    <div id="run-resume"></div>
+    <div class="card" id="coach-card"></div>
+    <h2>Start</h2>
+    <div class="card" id="run-setup"></div>
+    <h2>Recent</h2>
+    <div id="run-list"></div>
+  </section>
+
   <section class="screen" id="progress">
     <h1>Progress</h1>
     <p class="sub">Your lifts over time.</p>
@@ -149,7 +155,7 @@
     <div class="stats" id="stats"></div>
     <div id="attention"></div>
 
-    <h2>Weekly review</h2>
+    <h2>Review</h2>
     <div class="card" id="review-card"></div>
 
     <h2>Strength levels</h2>
@@ -282,6 +288,9 @@
 
   <!-- ===== FOCUS MODE ===== -->
   <div class="focus" id="focus"><div class="focus-body" id="focus-body"></div></div>
+
+  <!-- ===== LIVE RUN (GPS) ===== -->
+  <div class="focus track" id="track"><div class="focus-body" id="track-body"></div></div>
 
   <!-- ===== INTERVAL TIMER ===== -->
   <div class="overlay iv" id="interval"><div class="sheet" id="iv-sheet"></div></div>
