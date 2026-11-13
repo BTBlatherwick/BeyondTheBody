@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "2.23.0";
+const APP_VERSION = "2.24.0";
 
 // =====================================================================
 // SMALL HELPERS
@@ -177,6 +177,8 @@ function renderSettings() {
     group("Auto warm-up sets", "warmup", [["off", "Off"], ["barbell", "Barbell lifts"]]) +
     group("Keep screen on while training", "awake", [["on", "On"], ["off", "Off"]]) +
     '<div class="feed-meta">Stops the phone locking mid-workout, so the rest timer can always buzz. Uses a little more battery.</div>' +
+    group("Speak during workouts", "gymVoice", [["off", "Off"], ["on", "On"]]) +
+    '<div class="feed-meta">In focus mode it says what is next (exercise, weight, reps), counts down the last seconds of a rest, and tells you when it is over. Works best with headphones.</div>' +
     (NATIVE
       ? group("Workout reminders", "remind", [["off", "Off"], ["on", "On"]]) +
         (settings.remind === "on" ? group("Remind me at", "remindAt", [["07:00", "7 am"], ["12:00", "Noon"], ["17:00", "5 pm"], ["19:00", "7 pm"]]) : "") +
@@ -539,7 +541,18 @@ function normRota(r) {
   const work = tidy(r.work);
   return { len: len, work: work, gym: tidy(r.gym), run: tidy(r.run),
            nights: tidy(r.nights).filter(function (d) { return work.indexOf(d) >= 0; }),     // which work days are night shifts
+           over: tidyOver(r.over),
            start: /^\d{4}-\d{2}-\d{2}$/.test(r.start) && !isNaN(new Date(r.start + "T00:00:00")) ? r.start : dateKey(new Date()) };
+}
+// Dates you changed by hand: { "2026-11-20": "work" | "night" | "off" | "holiday" }. Old ones are dropped.
+function tidyOver(o) {
+  const out = {};
+  if (!o || typeof o !== "object" || Array.isArray(o)) return out;
+  const oldest = addDays(dateKey(new Date()), -120);
+  Object.keys(o).forEach(function (k) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(k) && k >= oldest && ["work", "night", "off", "holiday"].indexOf(o[k]) >= 0) out[k] = o[k];
+  });
+  return out;
 }
 
 let goals = normGoals(load("goals", {
@@ -733,7 +746,7 @@ $("goals-card").addEventListener("click", function (e) {
     return;
   }
   const rotaBtn = e.target.closest("[data-rota]");
-  if (rotaBtn) { rotaClick(rotaBtn.dataset.rota, Number(rotaBtn.dataset.v)); return; }
+  if (rotaBtn) { rotaClick(rotaBtn.dataset.rota, rotaBtn.dataset.rota === "over" ? rotaBtn.dataset.v : Number(rotaBtn.dataset.v)); return; }
   const dayBtn = e.target.closest("[data-day]");
   if (dayBtn) {
     const d = Number(dayBtn.dataset.day);
@@ -1210,6 +1223,7 @@ let restEnd = 0;
 let restTimer = null;
 
 function startRest(seconds, label) {
+  restSpoken = 0;
   const lab = document.querySelector("#rest .rest-label");
   if (lab) lab.textContent = label || "Rest";
   restEnd = Date.now() + seconds * 1000;
@@ -1219,6 +1233,7 @@ function startRest(seconds, label) {
   syncWake();
 }
 
+let restSpoken = 0;      // the last countdown number said aloud for this rest
 function tickRest() {
   const left = Math.ceil((restEnd - Date.now()) / 1000);
   if (left <= 0) {
@@ -1226,9 +1241,12 @@ function tickRest() {
     stopRest();
     if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
     if (late >= 3) flashRestOver(late);   // it ended while the app was in the background
+    else gymSay("Rest over. " + nextSetWords());
     return;
   }
   $("rest-time").textContent = mmss(left);
+  if (left === 10 && restSpoken !== 10) { restSpoken = 10; gymSay("Ten seconds."); }
+  else if (left === 3 && restSpoken !== 3) { restSpoken = 3; gymSay("Three. Two. One."); }
 }
 
 function stopRest() {
@@ -2555,16 +2573,17 @@ function beatTarget(name) {
 
 // How many personal records the whole history holds (same answer as checking every workout
 // against all the ones before it, but in one pass so it stays quick with years of workouts)
-function countPRs(history) {
+function countPRs(history, from, to) {
   const best = {};
   let n = 0;
   history.forEach(function (w) {
+    const counted = (!from || w.date >= from) && (!to || w.date < to);
     const today = {};
     w.exercises.forEach(function (ex) {
       let thisBest = 0;
       ex.sets.forEach(function (s) { thisBest = Math.max(thisBest, e1rm(parseFloat(s.weight) || 0, parseInt(s.reps) || 0)); });
       if (!thisBest) return;
-      if ((best[ex.name] || 0) > 0 && thisBest > best[ex.name]) n++;
+      if (counted && (best[ex.name] || 0) > 0 && thisBest > best[ex.name]) n++;
       today[ex.name] = Math.max(today[ex.name] || 0, thisBest);
     });
     Object.keys(today).forEach(function (name) { best[name] = Math.max(best[name] || 0, today[name]); });
@@ -6244,7 +6263,7 @@ function cyclePos(key) {
   const days = Math.round((new Date(key + "T00:00:00") - new Date(r.start + "T00:00:00")) / 86400000);
   return ((days % r.len) + r.len) % r.len;
 }
-function isWorkDate(key) { return !!goals.rota && goals.rota.work.indexOf(cyclePos(key)) >= 0; }
+function isWorkDate(key) { return !!goals.rota && shiftType(key) !== "off"; }
 // "Work 2" or "Off 3": where a cycle day sits in its run of shifts or days off
 function cycleLabel(i) {
   const r = goals.rota, isWork = r.work.indexOf(i) >= 0;
@@ -6288,13 +6307,46 @@ function rotaHtml() {
     <div class="feed-meta goal-blurb">${r.gym.length ? "About " + fmt(round1(rotaPerWeek())) + " gym sessions a week." : "None picked: train whenever suits you."}${freshestDays().length ? " You’re likely to be freshest on " + freshestDays().map(cycleLabel).join(", ") + "." : ""}</div>
     <div class="card-label" style="margin-top:.9rem">Run on</div>
     <div class="chips">${chips("run", r.run, cycleLabel)}</div>
-    <div class="feed-meta goal-blurb">${r.run.length ? "The running coach fits its runs onto these days." : "None picked: the running coach uses your days off, away from the gym where it can."}</div>`;
+    <div class="feed-meta goal-blurb">${r.run.length ? "The running coach fits its runs onto these days." : "None picked: the running coach uses your days off, away from the gym where it can."}</div>
+    ${rotaCalHtml()}`;
   return html + `</div>`;
+}
+// A calendar to change single dates: swapped shifts, a night you picked up, a holiday
+let rotaCalWeek = 0;       // how many weeks the calendar is scrolled forward
+const OVER_ORDER = ["work", "night", "off", "holiday"];
+function rotaCalHtml() {
+  const r = goals.rota, today = dateKey(new Date());
+  const first = addDays(weekStartKey(today), 7 * rotaCalWeek);
+  const code = { day: "W", night: "N", off: "–" };
+  let cells = DAY_NAMES.map(function (n) { return `<div class="cal-h">${n.slice(0, 2)}</div>`; }).join("");
+  for (let i = 0; i < 28; i++) {
+    const key = addDays(first, i), o = (r.over || {})[key], t = shiftType(key);
+    const cls = o === "holiday" ? "hol" : t === "night" ? "night" : t === "day" ? "work" : "off";
+    cells += `<button class="rc ${cls}${o ? " changed" : ""}${key === today ? " today" : ""}" data-rota="over" data-v="${key}" aria-label="${key}">
+      <b>${Number(key.slice(8))}</b><i>${o === "holiday" ? "H" : code[t]}</i></button>`;
+  }
+  const changed = Object.keys(r.over || {}).length;
+  return `<div class="card-label" style="margin-top:1rem">Change a date</div>
+    <div class="feed-meta goal-blurb" style="margin-top:0">Shifts swapped, a night picked up, a holiday? Tap a date to step it through Work, Night, Off and Holiday; landing back on what your pattern says undoes the change. Dots show dates you changed.</div>
+    <div class="rota-cal-nav"><button class="chip" data-rota="calnav" data-v="-1" aria-label="Earlier">‹</button>
+      <span class="feed-meta">${new Date(first + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })} to ${new Date(addDays(first, 27) + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span>
+      <button class="chip" data-rota="calnav" data-v="1" aria-label="Later">›</button></div>
+    <div class="rota-cal">${cells}</div>
+    <div class="feed-meta goal-blurb">W work · N night · – off · H holiday${changed ? ` · <button class="link-btn" data-rota="overclear">Clear my ${changed} change${changed === 1 ? "" : "s"}</button>` : ""}</div>`;
 }
 function rotaClick(action, v) {
   if (action === "on" && !goals.rota) goals.rota = normRota({ len: 8, work: [0, 1, 2, 3], gym: [4, 5, 7], run: [], start: dateKey(new Date()) });
   else if (action === "off") goals.rota = null;
   else if (goals.rota && action === "len") goals.rota = normRota(Object.assign({}, goals.rota, { len: goals.rota.len + v }));
+  else if (goals.rota && action === "calnav") { rotaCalWeek = Math.max(-8, Math.min(52, rotaCalWeek + 4 * v)); renderGoals(); return; }
+  else if (goals.rota && action === "overclear") goals.rota.over = {};
+  else if (goals.rota && action === "over") {
+    const key = String(v), now = goals.rota.over[key] || (patternType(key) === "day" ? "work" : patternType(key));
+    const next = OVER_ORDER[(OVER_ORDER.indexOf(now) + 1) % OVER_ORDER.length];
+    const p = patternType(key), patNext = p === "day" ? "work" : p;
+    if (next === patNext) delete goals.rota.over[key]; else goals.rota.over[key] = next;
+    goals.rota = normRota(goals.rota);
+  }
   else if (goals.rota && (action === "work" || action === "gym" || action === "run" || action === "nights")) {
     const list = goals.rota[action], at = list.indexOf(v);
     if (at >= 0) list.splice(at, 1); else list.push(v);
@@ -6682,6 +6734,26 @@ function focusTarget() {
   return { ei: ei, si: undone(exs[ei]) };
 }
 
+// ----- speaking in the gym -----
+function gymVoiceOn() { return settings.gymVoice === "on" && focusOn; }
+function gymSay(text) { if (gymVoiceOn() && text) coachSay(text); }
+// "Bench press. Set 2 of 3. 60 kilos, aim for 8."
+function nextSetWords() {
+  if (!workout || !focusOn) return "";
+  const t = focusTarget();
+  if (!t) return "Every set is done. Nice work.";
+  const ex = workout.exercises[t.ei], s = ex.sets[t.si];
+  const working = ex.sets.filter(function (x) { return !x.warmup; });
+  const num = working.indexOf(s) >= 0 ? working.indexOf(s) + 1 : t.si + 1;
+  let words = ex.name + ". " + (s.warmup ? "Warm-up set." : "Set " + num + " of " + working.length + ".");
+  if (isCardio(ex.name)) return words;
+  const kg = parseFloat(s.weight) || 0, reps = parseInt(s.reps) || 0;
+  const target = String(ex.target || "").replace("-", " to ");
+  words += kg > 0 ? " " + fmtW(kg) + (unit() === "kg" ? " kilos" : " pounds") : " Bodyweight";
+  if (reps) words += " for " + reps + ".";
+  else if (target) words += ", aim for " + target + ".";
+  return words;
+}
 function focusStep() { return unit() === "lb" ? fromDisp(5) : 2.5; }   // how much + and − change the weight (in kg)
 
 function renderFocus() {
@@ -6689,7 +6761,7 @@ function renderFocus() {
   const t = focusTarget();
   let total = 0, done = 0;
   workout.exercises.forEach(function (ex) { ex.sets.forEach(function (s) { if (!s.warmup) { total++; if (s.done) done++; } }); });
-  const head = `<div class="fo-top"><button class="tool" data-fo="exit">✕ Exit</button><span class="feed-meta">${esc(workout.name)} · ${done} of ${total} sets</span></div>`;
+  const head = `<div class="fo-top"><button class="tool" data-fo="exit">✕ Exit</button><span class="feed-meta">${esc(workout.name)} · ${done} of ${total} sets</span><button class="tool${settings.gymVoice === "on" ? " on" : ""}" data-fo="speak" aria-label="Speak during the workout">🔊</button></div>`;
 
   if (!t) {
     el.innerHTML = head + `<div class="fo-mid"><div class="fo-name">Every set ticked</div>
@@ -6788,6 +6860,7 @@ function openFocus() {
   focusPick = null;
   $("focus").classList.add("show");
   renderFocus();
+  gymSay("Starting. First up: " + nextSetWords());
   if (!focusTimer) focusTimer = setInterval(focusTick, 300);
   syncWake();
 }
@@ -6806,10 +6879,11 @@ $("focus").addEventListener("click", function (e) {
   const a = b.dataset.fo;
   if (a === "exit") { focusRead(); saveWorkout(); renderWorkout(); closeFocus(); return; }
   if (a === "finish") { closeFocus(); finishWorkout(); return; }
+  if (a === "speak") { settings.gymVoice = settings.gymVoice === "on" ? "off" : "on"; save("settings", settings); renderFocus(); if (settings.gymVoice === "on") coachSay("Voice on. " + nextSetWords()); return; }
   if (a === "done") { focusDone(); return; }
   if (a === "mic") { focusRead(); voiceLog(); return; }
   if (a === "reps") { focusRead(); repToggle(); return; }
-  if (a === "rest-skip") { stopRest(); focusTick(); return; }
+  if (a === "rest-skip") { stopRest(); focusTick(); gymSay(nextSetWords()); return; }
   if (a === "rest-add") { restEnd += 15000; focusTick(); return; }
   if (a === "later") {
     const cur = focusRead();
@@ -8264,6 +8338,126 @@ function autoSleep() {
   if (s && s.date === dateKey(new Date()) && Date.now() - s.at < 3 * 3600000) return;
   fetchSleep().then(function () { renderReadiness(); if (typeof refreshPlanAfterGoalChange === "function") refreshPlanAfterGoalChange(); }, function () {});
 }
+
+// =====================================================================
+// MONTHLY REPORT
+// A picture of the month: sessions, sets, weight lifted, runs, records and your biggest gains.
+// =====================================================================
+function monthKey(offset) { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - (offset || 0)); return dateKey(d).slice(0, 7); }
+function monthName(ym) { return new Date(ym + "-01T00:00:00").toLocaleDateString("en-GB", { month: "long" }); }
+function nextMonthStart(ym) { const d = new Date(ym + "-01T00:00:00"); d.setMonth(d.getMonth() + 1); return dateKey(d); }
+function monthStats(ym) {
+  const hist = getHistory(), start = ym + "-01", end = nextMonthStart(ym);
+  const mine = hist.filter(function (w) { return w.date >= start && w.date < end; });
+  let sets = 0, volume = 0, minutes = 0;
+  mine.forEach(function (w) { const t = workoutTotals(w); sets += t.sets; volume += t.volume; minutes += Number(w.minutes) || 0; });
+  const rr = runs.filter(function (r) { return r.date >= start && r.date < end; });
+  const km = rr.reduce(function (n, r) { return n + (r.type === "ride" ? 0 : r.km); }, 0);
+  const rideKm = rr.reduce(function (n, r) { return n + (r.type === "ride" ? r.km : 0); }, 0);
+  const days = {};
+  mine.forEach(function (w) { days[w.date] = true; });
+  rr.forEach(function (r) { days[r.date] = true; });
+  // Biggest gains: best estimated one-rep max this month against the best before it
+  const before = {}, during = {};
+  hist.forEach(function (w) {
+    if (w.date >= end) return;
+    w.exercises.forEach(function (ex) {
+      if (isCardio(ex.name)) return;
+      let b = 0;
+      ex.sets.forEach(function (st) { b = Math.max(b, e1rm(parseFloat(st.weight) || 0, parseInt(st.reps) || 0)); });
+      const bucket = w.date >= start ? during : before;
+      bucket[ex.name] = Math.max(bucket[ex.name] || 0, b);
+    });
+  });
+  const gains = Object.keys(during).filter(function (n) { return before[n] > 0 && during[n] > before[n] + 0.01; })
+    .map(function (n) { return { name: n, from: before[n], to: during[n], pct: during[n] / before[n] - 1 }; })
+    .sort(function (a, b) { return b.pct - a.pct; }).slice(0, 3);
+  return { ym: ym, workouts: mine.length, sets: sets, volume: volume, minutes: minutes, runs: rr.length, km: km, rideKm: rideKm,
+           activeDays: Object.keys(days).length, prs: countPRs(hist, start, end), gains: gains };
+}
+// The words and numbers on the picture, kept apart from the drawing so they can be checked
+function monthCardText(ym) {
+  const m = monthStats(ym);
+  const stats = [[String(m.workouts), m.workouts === 1 ? "workout" : "workouts"], [String(m.sets), "sets"]];
+  stats.push(m.volume ? [Math.round(toDisp(m.volume)).toLocaleString(), unit() + " lifted"] : [String(m.activeDays), "active days"]);
+  const second = [];
+  if (m.runs) second.push([String(m.runs), m.runs === 1 ? "run" : "runs"], [fmt(round1(distToDisp(m.km))), distUnit()]);
+  if (m.prs) second.push([String(m.prs), m.prs === 1 ? "record" : "records"]);
+  if (!m.runs) second.push([String(m.activeDays), "active days"]);
+  const lines = m.gains.map(function (g) { return [g.name, "+" + fmtW(g.to - g.from) + " " + unit() + " (+" + Math.round(g.pct * 100) + "%)"]; });
+  return { title: monthName(ym).toUpperCase(), year: ym.slice(0, 4), stats: stats, second: second.slice(0, 3), lines: lines, empty: !m.workouts && !m.runs, data: m };
+}
+function drawMonthCard(ym) {
+  const W = 1080, H = 1350, t = monthCardText(ym);
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const c = cv.getContext("2d");
+  const css = getComputedStyle(document.documentElement);
+  const accent = (css.getPropertyValue("--accent") || "#ffffff").trim() || "#ffffff";
+  const font = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
+  const glow = c.createLinearGradient(0, 0, 0, H);
+  glow.addColorStop(0, "#1a1a1e"); glow.addColorStop(0.45, "#0b0b0d");
+  c.fillStyle = glow; c.fillRect(0, 0, W, H);
+  c.fillStyle = accent; c.fillRect(70, 96, 96, 10);
+  c.textAlign = "left"; c.fillStyle = "#fff"; c.font = "800 110px " + font; c.fillText(t.title, 70, 230, W - 140);
+  c.fillStyle = "rgba(255,255,255,.6)"; c.font = "40px " + font; c.fillText(t.year + "  ·  MONTH IN REVIEW", 70, 292);
+  const row = function (items, y, size) {
+    items.forEach(function (st, i) {
+      const x = 70 + i * ((W - 140) / 3);
+      c.fillStyle = "#fff"; c.font = "800 " + size + "px " + font; c.textAlign = "left"; c.fillText(st[0], x, y, (W - 140) / 3 - 24);
+      c.fillStyle = "rgba(255,255,255,.6)"; c.font = "32px " + font; c.fillText(st[1], x, y + 48);
+    });
+  };
+  row(t.stats, 460, 96);
+  if (t.second.length) row(t.second, 640, 76);
+  let y = 840;
+  if (t.lines.length) {
+    c.fillStyle = accent; c.font = "700 34px " + font; c.textAlign = "left"; c.fillText("BIGGEST GAINS", 70, y - 30);
+    t.lines.forEach(function (ln) {
+      c.fillStyle = "rgba(255,255,255,.12)"; c.fillRect(70, y - 10, W - 140, 2);
+      c.textAlign = "left"; c.fillStyle = "#fff"; c.font = "600 40px " + font; c.fillText(ln[0], 70, y + 56, W - 140 - 360);
+      c.textAlign = "right"; c.fillStyle = "rgba(255,255,255,.85)"; c.font = "38px " + font; c.fillText(ln[1], W - 70, y + 56, 350);
+      y += 100;
+    });
+  }
+  if (t.empty) { c.textAlign = "left"; c.fillStyle = "rgba(255,255,255,.55)"; c.font = "40px " + font; c.fillText("Nothing logged this month yet.", 70, 520); }
+  return loadImg("logo-mark.svg", false).then(function (logo) {
+    const by = H - 150;
+    c.textAlign = "left";
+    if (logo) { try { c.drawImage(logo, 70, by, 84, 102); } catch (err) {} }
+    c.fillStyle = "#fff"; c.font = "800 44px " + font; c.fillText("BTB", logo ? 180 : 70, by + 48);
+    c.fillStyle = "rgba(255,255,255,.6)"; c.font = "600 26px " + font; c.fillText("B E Y O N D   T H E   B O D Y", logo ? 180 : 70, by + 90);
+    return cv;
+  });
+}
+let monthShown = 0;       // 0 = this month, 1 = last month
+function openMonthReport(offset) {
+  monthShown = offset || 0;
+  const ym = monthKey(monthShown), t = monthCardText(ym);
+  openSheet(`<div class="card-label">Monthly report</div>
+    <div class="chips" style="margin:.4rem 0 .8rem"><button class="chip${monthShown === 0 ? " on" : ""}" data-run="month" data-v="0">${monthName(monthKey(0))}</button><button class="chip${monthShown === 1 ? " on" : ""}" data-run="month" data-v="1">${monthName(monthKey(1))}</button><button class="chip${monthShown === 2 ? " on" : ""}" data-run="month" data-v="2">${monthName(monthKey(2))}</button></div>
+    <div id="month-pic" class="feed-meta">Drawing your picture…</div>
+    <button class="btn" data-run="month-share" ${t.empty ? "disabled" : ""}>Share picture</button>
+    <button class="btn ghost" data-a="add-close">Close</button>`);
+  drawMonthCard(ym).then(function (cv) {
+    const el = $("month-pic");
+    if (el && monthShown === (offset || 0)) el.innerHTML = `<img class="month-img" alt="${monthName(ym)} in review" src="${cv.toDataURL("image/png")}">`;
+  });
+}
+function shareMonthPic() {
+  const ym = monthKey(monthShown);
+  return drawMonthCard(ym).then(function (cv) { return new Promise(function (resolve) { cv.toBlob(resolve, "image/png"); }); }).then(function (blob) {
+    if (!blob) { alert("Couldn’t make the picture."); return "failed"; }
+    return fileOut("btb-" + ym + ".png", blob, { share: true, title: monthName(ym) + " with BTB", text: monthName(ym) + " in review, with BTB" });
+  });
+}
+$("month-btn").addEventListener("click", function () { openMonthReport(0); });
+$("sheet").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-run]");
+  if (!b) return;
+  if (b.dataset.run === "month") openMonthReport(Number(b.dataset.v));
+  if (b.dataset.run === "month-share") { b.disabled = true; b.textContent = "Making picture…"; shareMonthPic().then(function () { b.disabled = false; b.textContent = "Share picture"; }); }
+});
 function runStat(r) { return r.type === "ride" ? speedStr(r.km, r.secs) : paceStr(r.secs / r.km) + " " + paceUnit(); }
 function niceDate(key) { return new Date(key + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }); }
 
@@ -8675,8 +8869,8 @@ function runPlacement(mondayKey, sessions, len) {
   let cand;
   if (r.run.length) cand = all.filter(function (d) { return r.run.indexOf(pos(d)) >= 0; });
   else {
-    cand = all.filter(function (d) { return r.work.indexOf(pos(d)) < 0 && r.gym.indexOf(pos(d)) < 0; });      // days off with no gym
-    if (cand.length < sessions.length) cand = all.filter(function (d) { return r.work.indexOf(pos(d)) < 0; }); // any day off
+    cand = all.filter(function (d) { return !isWorkDate(addDays(mondayKey, d)) && r.gym.indexOf(pos(d)) < 0; });      // days off with no gym
+    if (cand.length < sessions.length) cand = all.filter(function (d) { return !isWorkDate(addDays(mondayKey, d)); }); // any day off
     if (cand.length < sessions.length) cand = all.slice();                                                    // any day at all
   }
   let keep = sessions.slice();
@@ -8728,7 +8922,7 @@ function schedule(startKey, n, now) {
   for (let i = -1; i < n; i++) {
     const date = addDays(startKey, i), wd = weekdayOf(date);
     days.push({ i: wd, date: date, name: DAY_NAMES[wd], dom: Number(date.slice(8)), today: date === today, past: date < today,
-                work: isWorkDate(date), off: !!goals.rota && !isWorkDate(date), shift: shiftType(date), rec: recovery(date), gym: null, run: null, warn: "" });
+                work: isWorkDate(date), off: !!goals.rota && !isWorkDate(date), shift: shiftType(date), hol: !!goals.rota && (goals.rota.over || {})[date] === "holiday", rec: recovery(date), gym: null, run: null, warn: "" });
   }
   const byDate = {};
   days.forEach(function (d) { byDate[d.date] = d; });
@@ -8821,7 +9015,7 @@ function renderWeekPlan() {
     if (d.gym) what += d.gym.missed ? item("Gym missed", false, "miss") : item(d.gym.name, d.gym.done);
     if (d.run) what += d.run.s ? item(runShort(d.run.s), d.run.done, d.run.late ? "miss" : "run") : item(fmtKm(d.run.free.km) + " " + RUN_TYPES[d.run.free.type].verb, true, "run");
     if (!what) what = `<span class="wp-rest">Rest</span>`;
-    html += `<div class="wp-row${d.today ? " today" : ""}${d.past ? " past" : ""}${r ? " rota" : ""}"><b>${d.name}${r ? " " + d.dom + `<i class="${d.work ? "w" : "o"}">${d.shift === "night" ? "nights" : d.work ? "work" : "off"}</i>` : ""}</b><div>${what}${d.warn ? `<div class="wp-warn">${esc(d.warn)}</div>` : ""}</div></div>`;
+    html += `<div class="wp-row${d.today ? " today" : ""}${d.past ? " past" : ""}${r ? " rota" : ""}"><b>${d.name}${r ? " " + d.dom + `<i class="${d.work ? "w" : "o"}">${d.shift === "night" ? "nights" : d.work ? "work" : d.hol ? "holiday" : "off"}</i>` : ""}</b><div>${what}${d.warn ? `<div class="wp-warn">${esc(d.warn)}</div>` : ""}</div></div>`;
   });
   const notes = [];
   if (wk.late) notes.push(wk.late === 1 ? "One run from earlier this week is still to do: fit it in on a rest day, or let it go." : wk.late + " runs from earlier this week are still to do. Don’t cram them: do the long run and drop the rest.");
@@ -8953,28 +9147,35 @@ document.addEventListener("visibilitychange", function () {
 // long run, and shows on the schedule.
 // =====================================================================
 // "night", "day" or "off" for a date (null with no shift pattern)
-function shiftType(key) {
-  const r = goals.rota;
-  if (!r) return null;
-  const p = cyclePos(key);
+function patternType(key) {
+  const r = goals.rota, p = cyclePos(key);
   if (r.work.indexOf(p) < 0) return "off";
   return (r.nights || []).indexOf(p) >= 0 ? "night" : "day";
 }
+// pure = ignore the dates you changed by hand and give what the repeating pattern says
+function shiftType(key, pure) {
+  const r = goals.rota;
+  if (!r) return null;
+  const o = pure ? null : (r.over || {})[key];
+  if (o) return o === "work" ? "day" : o === "night" ? "night" : "off";
+  return patternType(key);
+}
 // How recovered you are likely to be, 0 to 100 (null with no shift pattern).
 // A rule of thumb, not a measurement: it knows your shifts, not how you slept.
-function recovery(key) {
+function recovery(key, pure) {
   if (!goals.rota) return null;
-  const type = shiftType(key);
+  const st = function (k) { return shiftType(k, pure); };
+  const type = st(key);
   if (type === "off") {
     let off = 0, k = key;
-    while (off < 14 && shiftType(k) === "off") { off++; k = addDays(k, -1); }   // off = 1 on the first day off
-    const afterNights = shiftType(k) === "night";
+    while (off < 14 && st(k) === "off") { off++; k = addDays(k, -1); }   // off = 1 on the first day off
+    const afterNights = st(k) === "night";
     if (off === 1) return afterNights ? 40 : 70;
     if (off === 2) return afterNights ? 75 : 95;
     return 100;
   }
   let run = 0, nights = 0, k2 = addDays(key, -1);                                // shifts in a row before today
-  while (run < 14 && shiftType(k2) !== "off") { run++; if (shiftType(k2) === "night") nights++; k2 = addDays(k2, -1); }
+  while (run < 14 && st(k2) !== "off") { run++; if (st(k2) === "night") nights++; k2 = addDays(k2, -1); }
   return Math.max(30, (type === "night" ? 55 : 75) - run * 6 - nights * 2);
 }
 function recoveryNote(key) {
@@ -8990,7 +9191,7 @@ function freshestDays() {
   const r = goals.rota;
   if (!r) return [];
   const list = [];
-  for (let i = 0; i < r.len; i++) list.push({ i: i, rec: recovery(addDays(r.start, i)) });
+  for (let i = 0; i < r.len; i++) list.push({ i: i, rec: recovery(addDays(r.start, i), true) });
   return list.filter(function (d) { return d.rec >= 90; }).map(function (d) { return d.i; });
 }
 // What your shifts suggest for "How do you feel today?" when you haven't said
