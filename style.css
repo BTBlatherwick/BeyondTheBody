@@ -1220,3 +1220,13 @@ button.coach-row { display: flex; align-items: center; gap: .9rem; width: 100%; 
 
 /* ===== v2.20.1 ===== */
 .btn.danger { color: #e86a5c; border-color: rgba(232,106,92,.45); }
+
+/* ===== v2.22.0: heart rate ===== */
+.hr-chart { height: 90px; }
+
+/* ===== v2.23.0: heart rate zones ===== */
+.zone-row { display: flex; align-items: center; gap: .6rem; margin: .3rem 0; font-size: .9rem; }
+.zone-row > span:first-child { flex: 0 0 5.6rem; }
+.zone-bar { flex: 1; height: .55rem; border-radius: .3rem; background: rgba(255,255,255,.08); overflow: hidden; }
+.zone-bar i { display: block; height: 100%; background: var(--accent); border-radius: .3rem; }
+.zone-min { flex: 0 0 3.6rem; text-align: right; color: var(--muted); }

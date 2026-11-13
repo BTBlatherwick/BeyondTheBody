@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "2.21.0";
+const APP_VERSION = "2.23.0";
 
 // =====================================================================
 // SMALL HELPERS
@@ -562,13 +562,21 @@ function isAvoided(ex) {
 function readinessToday() {
   const r = goals.readiness;
   if (r && r.date === dateKey(new Date())) return r.level;
-  return shiftReadiness();          // you haven't said: go by your shifts (tired on the first day off after nights)
+  const sl = sleepToday(), shift = shiftReadiness();
+  if (sl && sl.mins < 360) return "tired";                // under six hours: tired, whatever the rota says
+  if (sl && sl.mins >= 450 && shift === "tired") return null;   // slept well after nights: not tired after all
+  return shift;                      // otherwise go by your shifts (tired on the first day off after nights)
 }
-// Did the answer come from you, or from your shift pattern?
-function readinessFromShifts() {
+// Where a "tired" you didn't choose came from: { src: "sleep" | "shifts", text } (null if you chose, or not tired)
+function readinessWhy() {
   const r = goals.readiness;
-  return !(r && r.date === dateKey(new Date())) && shiftReadiness() !== null;
+  if (r && r.date === dateKey(new Date())) return null;
+  if (readinessToday() !== "tired") return null;
+  const sl = sleepToday();
+  if (sl && sl.mins < 360) return { src: "sleep", text: "you slept " + sleepText(sl.mins) };
+  return { src: "shifts", text: recoveryNote(dateKey(new Date())).replace(/\.\s.*$/, "").replace(/\.$/, "").toLowerCase() };
 }
+function readinessFromShifts() { const w = readinessWhy(); return !!w && w.src === "shifts"; }
 
 // Weekly sets to aim for, per muscle: [low, high]
 function weeklyTargets() {
@@ -2130,11 +2138,27 @@ function renderReadiness() {
   el.innerHTML = `<div class="card-label">How do you feel today?</div><div class="chips">` +
     [["fresh", "Fresh"], ["normal", "Normal"], ["tired", "Tired"]].map(function (o) {
       return `<button class="chip${r === o[0] ? " on" : ""}" data-r="${o[0]}">${o[1]}</button>`;
-    }).join("") + `</div>` + (readinessFromShifts() ? `<div class="feed-meta" style="margin-top:.4rem">Set to Tired from your shifts: ${esc(recoveryNote(dateKey(new Date())))} Tap another if you feel better than that.</div>` : "");
+    }).join("") + `</div>` + readinessNote();
+}
+// The line under the tired/normal/fresh buttons
+function readinessNote() {
+  const w = readinessWhy(), sl = sleepToday();
+  let html = "";
+  if (w) html += `<div class="feed-meta" style="margin-top:.4rem">Set to Tired because ${esc(w.text)}. Tap another if you feel better than that.</div>`;
+  else if (sl) html += `<div class="feed-meta" style="margin-top:.4rem">You slept ${esc(sleepText(sl.mins))} last night.</div>`;
+  if (NATIVE && !settings.sleepAuto) html += `<button class="link-btn" data-r-sleep="1" style="display:block;margin-top:.3rem">Use last night’s sleep from my watch</button><div class="feed-meta" id="sleep-msg"></div>`;
+  return html;
 }
 
 // (the soreness chips sit right under these)
 $("ready-row").addEventListener("click", function (e) {
+  if (e.target.closest("[data-r-sleep]")) {
+    const msg = $("sleep-msg");
+    if (msg) msg.textContent = "Reading your watch…";
+    fetchSleep().then(function () { renderReadiness(); refreshPlanAfterGoalChange(); },
+      function (err) { const m = $("sleep-msg"); if (m) m.textContent = (err && err.message) || "Couldn't read sleep."; });
+    return;
+  }
   const b = e.target.closest("[data-r]");
   if (!b) return;
   goals.readiness = { date: dateKey(new Date()), level: b.dataset.r };
@@ -2374,7 +2398,14 @@ function renderPlateResult(targetDisp) {
 // =====================================================================
 // HISTORY, PERSONAL BESTS AND SMART PROGRESSION
 // =====================================================================
-function getHistory() { return load("workoutHistory", []); }
+// Reading and decoding years of history is slow, so it is kept until the saved text changes
+let histRaw = null, histVal = null;
+function getHistory() {
+  let raw = null;
+  try { raw = localStorage.getItem("workoutHistory"); } catch (e) { return load("workoutHistory", []); }
+  if (histVal === null || raw !== histRaw) { histRaw = raw; histVal = load("workoutHistory", []); }
+  return histVal;
+}
 
 // Epley formula: estimates the heaviest single rep you could do from a set
 function e1rm(kg, reps) {
@@ -2427,6 +2458,13 @@ function suggestion(name, target) {
   } else if (hitAllReps) {
     kg = topWeight + step;
     why = "You hit the top of the rep range, so add a little";
+  }
+
+  // Tired today (you said so, or your shifts or sleep suggest it): don't add weight
+  if (kg > topWeight + 0.001 && readinessToday() === "tired") {
+    const w = readinessWhy();
+    kg = topWeight;
+    why = "You’re low on recovery today" + (w ? " (" + w.text + ")" : "") + ", so hold the weight rather than add";
   }
 
   // No progress for three sessions: take a step back, then build up again
@@ -2515,6 +2553,24 @@ function beatTarget(name) {
   return fmtW(kg) + " × " + (reps + 1) + " or " + fmtW(kg + step) + " × " + reps;
 }
 
+// How many personal records the whole history holds (same answer as checking every workout
+// against all the ones before it, but in one pass so it stays quick with years of workouts)
+function countPRs(history) {
+  const best = {};
+  let n = 0;
+  history.forEach(function (w) {
+    const today = {};
+    w.exercises.forEach(function (ex) {
+      let thisBest = 0;
+      ex.sets.forEach(function (s) { thisBest = Math.max(thisBest, e1rm(parseFloat(s.weight) || 0, parseInt(s.reps) || 0)); });
+      if (!thisBest) return;
+      if ((best[ex.name] || 0) > 0 && thisBest > best[ex.name]) n++;
+      today[ex.name] = Math.max(today[ex.name] || 0, thisBest);
+    });
+    Object.keys(today).forEach(function (name) { best[name] = Math.max(best[name] || 0, today[name]); });
+  });
+  return n;
+}
 // Did this workout beat any previous best? (compares estimated one-rep max)
 function findPRs(exercises, priorHistory) {
   const prs = [];
@@ -4751,6 +4807,8 @@ function wipeEverything() {
   }
   if (NATIVE) nativeCall("LocalNotifications", "cancel", { notifications: REMIND_IDS.concat([2100, 900]).map(function (id) { return { id: id }; }) }).catch(function () {});
   try {
+    safety.close();
+    indexedDB.deleteDatabase("gymapp-safety");
     if (photoStore.db) photoStore.db.close();
     const req = indexedDB.deleteDatabase("gymapp-photos");
     req.onsuccess = req.onerror = req.onblocked = finish;
@@ -5027,6 +5085,85 @@ function backupReminder(now) {
            body: "Your training history lives only on this phone. Open BTB and tap Download backup on Home." };
 }
 
+
+// ----- automatic safety copies -----
+// A daily copy of your data (workouts, runs, goals, settings; not photos) kept on the phone in a
+// separate store, the last seven days. It protects against a bad restore, a slip with delete, or
+// a bug. It is NOT a backup against losing the phone: for that, Download backup and save it to Drive.
+const safety = {
+  db: null,
+  open: function () {
+    if (this.db) return Promise.resolve(this.db);
+    const self = this;
+    return new Promise(function (resolve, reject) {
+      if (typeof indexedDB === "undefined") { reject(new Error("no storage")); return; }
+      const req = indexedDB.open("gymapp-safety", 1);
+      req.onupgradeneeded = function () { req.result.createObjectStore("copies", { keyPath: "id" }); };
+      req.onsuccess = function () { self.db = req.result; resolve(self.db); };
+      req.onerror = function () { reject(req.error); };
+    });
+  },
+  run: function (mode, action) {
+    return this.open().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        const tx = db.transaction("copies", mode), req = action(tx.objectStore("copies"));
+        tx.oncomplete = function () { resolve(req && req.result); };
+        tx.onerror = tx.onabort = function () { reject(tx.error); };
+      });
+    });
+  },
+  all: function () { return this.run("readonly", function (st) { return st.getAll(); }).then(function (l) { return (l || []).sort(function (a, b) { return b.at - a.at; }); }); },
+  put: function (rec) { return this.run("readwrite", function (st) { return st.put(rec); }); },
+  remove: function (id) { return this.run("readwrite", function (st) { return st.delete(id); }); },
+  close: function () { try { if (this.db) this.db.close(); } catch (e) {} this.db = null; }
+};
+const SAFETY_KEEP = 7;
+function snapshotNow(reason) {
+  const b = buildBackup();
+  const rec = { id: Date.now(), at: Date.now(), reason: reason || "daily", workouts: (b.data.workoutHistory || []).length, runs: (b.data.runs || []).length, json: JSON.stringify(b) };
+  return safety.put(rec).then(function () {
+    save("lastSafety", rec.at);
+    return safety.all();
+  }).then(function (list) {
+    return Promise.all(list.slice(SAFETY_KEEP).map(function (x) { return safety.remove(x.id); }));
+  }).then(function () { return rec; });
+}
+// Once a day, and only when there is something worth keeping
+function autoSafety() {
+  if (getHistory().length + runs.length < 1) return Promise.resolve(null);
+  const last = load("lastSafety", 0);
+  if (Date.now() - last < 20 * 3600000) return Promise.resolve(null);
+  return snapshotNow("daily").then(function (r) { renderSafety(); return r; }, function () { return null; });
+}
+function renderSafety() {
+  const el = $("safety-card");
+  if (!el) return Promise.resolve();
+  return safety.all().then(function (list) {
+    if (!list.length) { el.innerHTML = `<div class="feed-meta">Automatic safety copies: one is saved on this phone each day you open the app (last ${SAFETY_KEEP} kept).</div>`; return; }
+    el.innerHTML = `<div class="card-label">Automatic safety copies</div>` + list.map(function (x) {
+      const d = new Date(x.at);
+      return `<div class="pr-row"><span>${d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })} ${d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}<span class="feed-meta"> · ${x.workouts} workouts${x.runs ? ", " + x.runs + " runs" : ""}${x.reason !== "daily" ? " · " + esc(x.reason) : ""}</span></span><button class="tool" data-safety="${x.id}">Restore</button></div>`;
+    }).join("") + `<div class="feed-meta" style="margin-top:.4rem">These stay on this phone. To protect against losing the phone, use Download backup and save it to Drive.</div>`;
+  }, function () { el.innerHTML = ""; });
+}
+$("safety-card").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-safety]");
+  if (!b) return;
+  const id = Number(b.dataset.safety);
+  safety.all().then(function (list) {
+    const rec = list.filter(function (x) { return x.id === id; })[0];
+    if (!rec) return;
+    if (!confirm("Restore the copy from " + new Date(rec.at).toLocaleString("en-GB") + "? It replaces your workouts, runs, goals and settings with what was saved then (your photos are left alone). Your current data is saved as a safety copy first.")) return;
+    let data;
+    try { data = JSON.parse(rec.json); } catch (err) { alert("That copy couldn’t be read."); return; }
+    snapshotNow("before restore").then(function () {
+      const res = applyBackup(data);
+      if (!res.ok) { alert(res.error); return; }
+      location.reload();
+    });
+  });
+});
+
 function renderBackupStatus() {
   const last = load("lastBackup", null);
   const workouts = getHistory().length;
@@ -5043,6 +5180,7 @@ function renderBackupStatus() {
     ? "It’s been over " + (NATIVE ? "a week" : "two weeks") + " since your last backup."
     : "You have " + workouts + " workouts saved only " + (NATIVE ? "on this phone." : "in this browser.");
   queueReminders();
+  renderSafety();
 }
 
 $("export-btn").addEventListener("click", exportBackup);
@@ -5064,6 +5202,7 @@ $("import-file").addEventListener("change", function (e) {
     if (!confirm("Restore this backup? It replaces everything currently in the app (the backup has " + n + " workouts" +
                  (hasPhotos ? " and " + pn + (pn === 1 ? " photo" : " photos") : "; it has no photos, so the photos on this phone are left alone") + ").")) return;
 
+    snapshotNow("before restore").catch(function () {}).then(function () {
     const result = applyBackup(backup);
     if (!result.ok) { alert(result.error); return; }
     if (!hasPhotos) { location.reload(); return; }
@@ -5071,6 +5210,7 @@ $("import-file").addEventListener("change", function (e) {
     restorePhotos(backup.photos)
       .catch(function () { alert("Your workouts were restored, but the photos couldn’t be."); })
       .then(function () { location.reload(); });
+    });
   };
   reader.readAsText(file);
   e.target.value = "";   // lets you pick the same file again later
@@ -6002,8 +6142,8 @@ function badgeStats() {
     w.exercises.forEach(function (ex) {
       if (isCardio(ex.name)) ex.sets.forEach(function (s) { cardio += parseFloat(s.mins) || 0; });
     });
-    prs += findPRs(w.exercises, history.slice(0, i)).length;
   });
+  prs = countPRs(history);
 
   // Most muscle groups trained in a single week
   const weekMuscles = {};
@@ -7471,7 +7611,8 @@ function trackRecord(now) {
   const secs = Math.round(trackElapsed(now));
   return { id: "r" + trk.startMs, date: dateKey(new Date(trk.startMs)), type: trk.type, title: trk.title,
            km: Math.round(trk.dist * 1000) / 1000, secs: secs, splits: trk.splits.slice(), unit: distUnit(),
-           route: encodeRoute(trk.pts), rt: encodeTimes(trk.ptT), best: bestEfforts(trk.marks), vs: ghostResult(trk.marks), session: trk.session, gaps: trk.gaps };
+           route: encodeRoute(trk.pts), rt: encodeTimes(trk.ptT), best: bestEfforts(trk.marks), vs: ghostResult(trk.marks), session: trk.session, gaps: trk.gaps,
+           t0: trk.startMs, t1: typeof now === "number" ? now : Date.now() };
 }
 function trackClose() {
   gpsStop();
@@ -7958,6 +8099,171 @@ function runChartsHtml() {
     ${kinds.length > 1 ? `<div class="chips" style="margin-bottom:.6rem">${[["all", "All"]].concat(kinds.map(function (k) { return [k, RUN_TYPES[k].label]; })).map(function (c) { return `<button class="chip${t === c[0] ? " on" : ""}" data-rl="chart-t" data-v="${c[0]}">${c[1]}</button>`; }).join("")}</div>` : ""}
     ${body}</div>`;
 }
+
+// ----- heart rate -----
+// A watch (a Galaxy Watch through Samsung Health, for example) shares its readings with Android's
+// Health Connect, and this reads them back for the time a run took. It needs a small add-on in the
+// installed app, and it asks your permission the first time.
+const HEALTH_NAMES = ["Health", "CapacitorHealth", "CapgoHealth"];
+function healthCall(method, options, i) {
+  i = i || 0;
+  if (i >= HEALTH_NAMES.length) return Promise.reject(new Error("The heart rate add-on isn't in this build yet. Follow the heart rate steps, then build again."));
+  return nativeCall(HEALTH_NAMES[i], method, options).catch(function (err) {
+    const m = String((err && (err.message || err.errorMessage)) || err);
+    if (/not (implemented|installed|available)|unimplemented|no plugin|not found/i.test(m)) return healthCall(method, options, i + 1);
+    throw err;
+  });
+}
+// When a run began and ended, in milliseconds
+function runSpan(r) {
+  let t0 = Number(r.t0), t1 = Number(r.t1);
+  if (!t0) { const m = /^r(\d{12,})$/.exec(String(r.id)); t0 = m ? Number(m[1]) : new Date(r.date + "T12:00:00").getTime(); }
+  if (!t1 || t1 <= t0) t1 = t0 + Math.round(r.secs * 1.25) * 1000;    // older runs: allow for time stopped
+  return [t0, t1];
+}
+// Turns the watch's readings into what we keep: average, highest, lowest and a shape of the run
+function hrSummary(samples, t0, t1) {
+  const good = (samples || []).map(function (x) { return { v: Number(x.value), t: new Date(x.startDate).getTime() }; })
+    .filter(function (x) { return x.v >= 30 && x.v <= 230 && x.t >= t0 - 60000 && x.t <= t1 + 60000; });
+  if (!good.length) return null;
+  const N = 40, bucket = (t1 - t0) / N, sums = [], counts = [];
+  for (let i = 0; i < N; i++) { sums.push(0); counts.push(0); }
+  good.forEach(function (x) {
+    const i = Math.max(0, Math.min(N - 1, Math.floor((x.t - t0) / bucket)));
+    sums[i] += x.v; counts[i]++;
+  });
+  const shape = [];
+  let last = null;
+  for (let j = 0; j < N; j++) {
+    if (counts[j]) last = Math.round(sums[j] / counts[j]);
+    if (last !== null) shape.push(last);
+  }
+  const all = good.map(function (x) { return x.v; });
+  return { avg: Math.round(all.reduce(function (a, b) { return a + b; }, 0) / all.length), max: Math.round(Math.max.apply(null, all)), min: Math.round(Math.min.apply(null, all)), n: all.length, s: shape };
+}
+// Asks permission if needed, reads the readings for this run and keeps the summary with it
+function fetchHeartRate(r) {
+  const span = runSpan(r);
+  return healthCall("requestAuthorization", { read: ["heartRate"], write: [] }).then(function (st) {
+    if (st && Array.isArray(st.readAuthorized) && st.readAuthorized.indexOf("heartRate") < 0) throw new Error("Heart rate permission wasn't given. You can allow it in Health Connect settings.");
+    return healthCall("readSamples", { dataType: "heartRate", startDate: new Date(span[0] - 60000).toISOString(), endDate: new Date(span[1] + 60000).toISOString(), limit: 5000, ascending: true });
+  }).then(function (res) {
+    const sum = hrSummary(res && res.samples, span[0], span[1]);
+    if (!sum) throw new Error("No heart rate found for that time. Your watch may not have synced yet: open Samsung Health, give it a minute, then try again.");
+    r.hr = sum;
+    saveRuns();
+    settings.hrAuto = true; save("settings", settings);
+    return sum;
+  });
+}
+// A small picture of heart rate over the run
+function hrSvg(s) {
+  const W = 320, H = 90, pad = 8;
+  const min = Math.min.apply(null, s), max = Math.max.apply(null, s), range = Math.max(1, max - min);
+  const pts = s.map(function (v, i) { return (pad + (W - 2 * pad) * (s.length === 1 ? 0.5 : i / (s.length - 1))).toFixed(1) + "," + (pad + (H - 2 * pad) * (1 - (v - min) / range)).toFixed(1); }).join(" ");
+  return `<svg class="chart hr-chart" viewBox="0 0 ${W} ${H}"><polyline class="ch-line" points="${pts}"/></svg>`;
+}
+// Heart rate zones: how hard each part of a run was, as a share of your maximum
+const HR_ZONES = [["Easy", 0.5], ["Light", 0.6], ["Steady", 0.7], ["Hard", 0.8], ["Max", 0.9]];
+// Your maximum: what you entered, or the highest you have recorded on a run
+function maxHr() {
+  const set = Number(settings.maxHr);
+  if (set >= 120 && set <= 230) return { bpm: Math.round(set), own: true };
+  const seen = runs.reduce(function (m, r) { return Math.max(m, r.hr ? r.hr.max : 0); }, 0);
+  return seen >= 120 ? { bpm: seen, own: false } : null;
+}
+// Minutes in each zone (the run's heart rate shape covers its whole time evenly)
+function hrZones(r, max) {
+  if (!r.hr || !r.hr.s || !r.hr.s.length) return null;
+  const mins = HR_ZONES.map(function () { return 0; }), each = r.secs / 60 / r.hr.s.length;
+  r.hr.s.forEach(function (v) {
+    const f = v / max;
+    let z = 0;
+    for (let i = HR_ZONES.length - 1; i >= 0; i--) if (f >= HR_ZONES[i][1]) { z = i; break; }
+    mins[z] += each;
+  });
+  return mins;
+}
+function zonesHtml(r) {
+  const m = maxHr(), z = m ? hrZones(r, m.bpm) : null;
+  const total = z ? z.reduce(function (a, b) { return a + b; }, 0) : 0;
+  let html = "";
+  if (z && total > 0) {
+    html += `<div class="card-label" style="margin-top:.7rem">Time in each zone</div>` + HR_ZONES.map(function (zn, i) {
+      const pct = Math.round(z[i] / total * 100);
+      return `<div class="zone-row"><span>${zn[0]} <span class="feed-meta">${Math.round(zn[1] * 100)}%+</span></span><span class="zone-bar"><i style="width:${pct}%"></i></span><span class="zone-min">${z[i] < 1 && z[i] > 0 ? "<1" : Math.round(z[i])} min</span></div>`;
+    }).join("");
+  }
+  html += `<div class="feed-meta" style="margin-top:.5rem">Max heart rate${m && !m.own ? " (your highest so far)" : ""}: <input type="number" inputmode="numeric" class="inp-date" id="hr-max" style="width:5.5rem;display:inline-block" min="120" max="230" placeholder="e.g. 190" value="${m ? m.bpm : ""}"> bpm</div>`;
+  return html;
+}
+$("sheet").addEventListener("change", function (e) {
+  if (e.target.id !== "hr-max") return;
+  const n = Number(e.target.value);
+  if (n >= 120 && n <= 230) settings.maxHr = Math.round(n); else delete settings.maxHr;
+  save("settings", settings);
+  const open = document.querySelector("#sheet [data-run=share]");
+  if (open) openRunDetail(open.dataset.id, false);
+});
+function hrBlock(r) {
+  if (r.hr) return `<div class="card-label" style="margin-top:.9rem">Heart rate</div>
+    <div class="tk-stats" style="margin:.4rem 0"><div><b>${r.hr.avg}</b><span>Average</span></div><div><b>${r.hr.max}</b><span>Highest</span></div><div><b>${r.hr.min}</b><span>Lowest</span></div></div>
+    ${r.hr.s && r.hr.s.length > 1 ? hrSvg(r.hr.s) : ""}
+    ${zonesHtml(r)}`;
+  if (!NATIVE) return "";
+  return `<button class="btn ghost" data-run="hr" data-id="${esc(r.id)}" style="margin-top:.9rem">Add heart rate from my watch</button>
+    <div class="feed-meta" id="hr-msg"></div>`;
+}
+$("sheet").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-run]");
+  if (!b || b.dataset.run !== "hr") return;
+  const r = runs.filter(function (x) { return x.id === b.dataset.id; })[0];
+  if (!r) return;
+  const msg = $("hr-msg");
+  if (msg) msg.textContent = "Reading your watch…";
+  fetchHeartRate(r).then(function () { openRunDetail(r.id, false); },
+    function (err) { const m = $("hr-msg"); if (m) m.textContent = (err && err.message) || "Couldn't read heart rate."; });
+});
+
+// ----- sleep -----
+// The watch's sleep (through Health Connect, like heart rate) for last night. Under six hours counts as
+// tired; after nights, eight or more hours cancels the "first day off after nights" guess.
+function sleepToday() { const s = load("sleepLast", null); return s && s.date === dateKey(new Date()) ? s : null; }
+function sleepText(mins) { const h = Math.floor(mins / 60), m = Math.round(mins % 60); return h + "h " + (m < 10 ? "0" : "") + m + "m"; }
+// Minutes asleep across the sleep sessions that ended in the last 20 hours
+function sleepSummary(samples, nowMs) {
+  const since = nowMs - 20 * 3600000;
+  let mins = 0, found = false;
+  (samples || []).forEach(function (x) {
+    const end = new Date(x.endDate).getTime();
+    if (!(end > since && end <= nowMs + 3600000)) return;
+    found = true;
+    if (Array.isArray(x.stages) && x.stages.length) {
+      x.stages.forEach(function (g) { if (g.stage !== "awake" && g.stage !== "inBed") mins += Number(g.durationMinutes) || (new Date(g.endDate) - new Date(g.startDate)) / 60000 || 0; });
+    } else if (x.sleepState !== "awake" && x.sleepState !== "inBed") mins += Number(x.value) || (end - new Date(x.startDate).getTime()) / 60000 || 0;
+  });
+  return found && mins >= 30 ? Math.round(mins) : null;
+}
+function fetchSleep() {
+  const now = Date.now();
+  return healthCall("requestAuthorization", { read: ["sleep"], write: [] }).then(function (st) {
+    if (st && Array.isArray(st.readAuthorized) && st.readAuthorized.indexOf("sleep") < 0) throw new Error("Sleep permission wasn't given. You can allow it in Health Connect settings.");
+    return healthCall("readSamples", { dataType: "sleep", startDate: new Date(now - 30 * 3600000).toISOString(), endDate: new Date(now).toISOString(), limit: 200, ascending: true });
+  }).then(function (res) {
+    const mins = sleepSummary(res && res.samples, now);
+    if (mins === null) throw new Error("No sleep found for last night. Wear your watch to bed, and open Samsung Health so it syncs.");
+    save("sleepLast", { date: dateKey(new Date()), mins: mins, at: now });
+    settings.sleepAuto = true; save("settings", settings);
+    return mins;
+  });
+}
+// Quietly refresh when you open the app, once the permission has been given (at most every 3 hours)
+function autoSleep() {
+  if (!NATIVE || !settings.sleepAuto) return;
+  const s = load("sleepLast", null);
+  if (s && s.date === dateKey(new Date()) && Date.now() - s.at < 3 * 3600000) return;
+  fetchSleep().then(function () { renderReadiness(); if (typeof refreshPlanAfterGoalChange === "function") refreshPlanAfterGoalChange(); }, function () {});
+}
 function runStat(r) { return r.type === "ride" ? speedStr(r.km, r.secs) : paceStr(r.secs / r.km) + " " + paceUnit(); }
 function niceDate(key) { return new Date(key + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }); }
 
@@ -7981,7 +8287,7 @@ function renderRunList() {
     html += `<button type="button" class="card run-row" data-rl="open" data-id="${esc(r.id)}">
       ${routeThumb(decodeRoute(r.route))}
       <span class="run-txt"><span class="pr-name">${esc(r.title || RUN_TYPES[r.type].label)}</span>
-        <span class="pr-sub">${niceDate(r.date)} · ${fmtKm(r.km)} · ${runClock(r.secs)}${r.km > 0 ? " · " + runStat(r) : ""}</span></span></button>`;
+        <span class="pr-sub">${niceDate(r.date)} · ${fmtKm(r.km)} · ${runClock(r.secs)}${r.km > 0 ? " · " + runStat(r) : ""}${r.hr ? " · ♥ " + r.hr.avg : ""}</span></span></button>`;
   });
   if (list.length > runsShown) html += `<button class="btn ghost" data-rl="more">Show more (${list.length - runsShown} older)</button>`;
   el.innerHTML = html;
@@ -7998,6 +8304,10 @@ $("run-list").addEventListener("click", function (e) {
 function openRunDetail(id, justDone) {
   const r = runs.filter(function (x) { return x.id === id; })[0];
   if (!r) return;
+  if (NATIVE && settings.hrAuto && !r.hr && !r.hrTried && Date.now() - runSpan(r)[1] < 3 * 86400000 && !justDone) {
+    r.hrTried = true;                                           // one quiet try per run when you open it
+    fetchHeartRate(r).then(function () { openRunDetail(id, false); }, function () {});
+  }
   const pts = decodeRoute(r.route);
   const perUnit = (r.unit || "km") === "mi" ? "mi" : "km";
   const fastest = r.splits && r.splits.length ? Math.min.apply(null, r.splits) : 0;
@@ -8011,6 +8321,7 @@ function openRunDetail(id, justDone) {
     ${r.vs ? `<div class="pr-line">👻 ${r.vs.secs >= 3 ? "<b>" + runClock(r.vs.secs) + " faster</b> than your best on this route" : r.vs.secs <= -3 ? runClock(-r.vs.secs) + " slower than your best on this route" : "Level with your best on this route"} (${niceDate(r.vs.date)})</div>` : ""}
     ${s ? `<div class="trend-line" style="margin-top:.8rem">Coach session: ${esc(s.title)}. Planned ${fmtKm(s.km)} in about ${Math.round(s.secs / 60)} min.</div>` : ""}
     ${r.gaps ? `<div class="feed-meta" style="margin-top:.6rem">The screen went off ${r.gaps === 1 ? "once" : r.gaps + " times"} during this one, so some distance may be missing.</div>` : ""}
+    ${hrBlock(r)}
     ${r.splits && r.splits.length ? `<div class="card-label" style="margin-top:.9rem">Splits</div>
       ${r.splits.map(function (sec, i) { return `<div class="pr-row"><span>${i + 1} ${perUnit}</span><span${sec === fastest && r.splits.length > 1 ? ' style="color:var(--accent);font-weight:700"' : ""}>${runClock(sec)}</span></div>`; }).join("")}` : ""}
     <button class="btn" data-run="share" data-id="${esc(r.id)}" style="margin-top:1rem">Share picture</button>
@@ -8595,7 +8906,28 @@ function syncReminders() {
 function queueReminders() {
   if (!NATIVE) return;
   clearTimeout(remindTimer);
-  remindTimer = setTimeout(syncReminders, 1500);
+  remindTimer = setTimeout(function () { syncReminders(); syncWidget(); }, 1500);
+}
+// ----- home-screen widget -----
+// The next eight days' plan, written where the Android widget can read it. Needs the optional widget
+// add-on and Capacitor's Preferences plugin; without them this quietly does nothing.
+let widgetSent = "";
+function widgetData(now) {
+  now = now || new Date();
+  const days = schedule(dateKey(now), 8, now).days.map(function (d) {
+    const plan = dayPlanText(d);
+    const kind = d.shift === "night" ? "Night shift" : d.work ? "Work day" : "Rest day";
+    const state = d.gym && d.gym.done ? "Done" : d.run && d.run.done ? "Done" : "";
+    return { date: d.date, t: plan || kind, s: plan ? (d.shift === "night" ? "Night shift today" : d.work ? "Work day" : "") + (state ? (d.work || d.shift ? " · " : "") + state : "") : (goals.rota && !d.work ? cycleLabel(cyclePos(d.date)) : "") };
+  });
+  return { v: 1, streak: streakText(weekStreak()), days: days };
+}
+function syncWidget() {
+  if (!NATIVE) return Promise.resolve(false);
+  let text;
+  try { text = JSON.stringify(widgetData()); } catch (err) { return Promise.resolve(false); }
+  if (text === widgetSent) return Promise.resolve(true);
+  return nativeCall("Preferences", "set", { key: "btbWidget", value: text }).then(function () { widgetSent = text; return true; }, function () { return false; });
 }
 
 // Rest timer: if you lock the phone or switch app mid-rest, Android rings when the rest is over
@@ -8854,7 +9186,7 @@ function voiceApply(heard) {
   return { ok: true, say: "Logged " + said + "." };
 }
 function voiceAvailable() {
-  if (NATIVE) return !!(window.Capacitor.Plugins && window.Capacitor.Plugins.SpeechRecognition);
+  if (NATIVE) return true;      // the button always shows in the installed app; if the add-on is missing, tapping it says how to add it
   return typeof window !== "undefined" && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 }
 // Listens once and gives back the list of things it might have heard
@@ -8889,7 +9221,10 @@ function voiceLog() {
     if ($("fo-voice")) $("fo-voice").textContent = "“" + pick + "” → " + res.say;
     return res;
   }, function (err) {
-    if ($("fo-voice")) $("fo-voice").textContent = "Couldn’t listen: " + (err && err.message ? err.message : "microphone not available") + ".";
+    const why = String((err && (err.message || err.errorMessage)) || "");
+    if ($("fo-voice")) $("fo-voice").textContent = NATIVE && /not (implemented|installed|available)|unimplemented|no plugin|not found/i.test(why)
+      ? "Voice needs a small add-on in the installed app. It isn't in this build yet: follow the voice steps, then build again."
+      : "Couldn’t listen: " + (why || "microphone not available") + ".";
     return null;
   });
 }
@@ -9046,7 +9381,7 @@ function coachContext() {
   } else L.push("No gym sessions logged yet.");
   if (runPlan) L.push("Running plan: " + RUN_GOALS[runPlan.goal].label + ", " + runPlan.perWeek + " runs per " + (planLen() === 7 ? "week" : "shift cycle") + ", plan " + (planLen() === 7 ? "week " : "cycle ") + planWeekNow() + " of " + RUN_GOALS[runPlan.goal].weeks + ", current 5K " + runClock(runPlan.t5) + ".");
   const rr = runs.slice(-6);
-  if (rr.length) L.push("Recent runs: " + rr.map(function (r) { return r.date + " " + r.type + " " + fmtKm(r.km) + " in " + runClock(r.secs) + (r.type === "ride" || !r.km ? "" : " (" + paceStr(r.secs / r.km) + paceUnit() + ")"); }).join("; ") + ".");
+  if (rr.length) L.push("Recent runs: " + rr.map(function (r) { return r.date + " " + r.type + " " + fmtKm(r.km) + " in " + runClock(r.secs) + (r.type === "ride" || !r.km ? "" : " (" + paceStr(r.secs / r.km) + paceUnit() + ")") + (r.hr ? " heart rate avg " + r.hr.avg + " max " + r.hr.max : ""); }).join("; ") + ".");
   const days = schedule(today, 8).days.filter(function (d) { return d.gym || d.run; }).map(function (d) { return d.name + " " + d.dom + ": " + dayPlanText(d) + (d.warn ? " [" + d.warn + "]" : ""); });
   if (days.length) L.push("Planned next 8 days: " + days.join("; ") + ".");
   return L.join("\n");
@@ -9246,6 +9581,8 @@ $("version-label").textContent = "Version " + APP_VERSION;
 
 // Check when the app starts and whenever you come back to it
 checkForUpdate(false);
+autoSleep();
+{ const t = setTimeout(autoSafety, 4000); if (t && t.unref) t.unref(); }   // (unref: lets the test runner exit; does nothing in a browser)
 document.addEventListener("visibilitychange", function () {
-  if (document.visibilityState === "visible") checkForUpdate(false);
+  if (document.visibilityState === "visible") { checkForUpdate(false); autoSleep(); autoSafety(); }
 });
