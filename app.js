@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "2.24.0";
+const APP_VERSION = "2.27.1";
 
 // =====================================================================
 // SMALL HELPERS
@@ -2157,6 +2157,8 @@ function renderReadiness() {
     [["fresh", "Fresh"], ["normal", "Normal"], ["tired", "Tired"]].map(function (o) {
       return `<button class="chip${r === o[0] ? " on" : ""}" data-r="${o[0]}">${o[1]}</button>`;
     }).join("") + `</div>` + readinessNote();
+  renderRestDay();
+  renderMobCard();
 }
 // The line under the tired/normal/fresh buttons
 function readinessNote() {
@@ -3037,6 +3039,7 @@ function workoutTotals(w) {
 }
 
 function openSummary(entry, prs, newBadges) {
+  lastEntry = entry; lastPrs = prs || [];
   const t = workoutTotals(entry);
   let html = `<div class="card-label">Workout complete</div>
     <div class="big">${esc(entry.name)}</div>
@@ -3066,7 +3069,9 @@ function openSummary(entry, prs, newBadges) {
     <input class="set-input note" id="sum-note" maxlength="160" placeholder="A note about today (optional)">`;
 
   html += `<button class="btn" data-a="summary-done">Done</button>
-    <button class="btn ghost" data-run="gym-pic" data-i="${getHistory().length - 1}">Share picture</button>`;
+    <button class="btn ghost" data-run="gym-pic" data-i="${getHistory().length - 1}">Share picture</button>` +
+    (prs.length ? `<button class="btn ghost" data-run="pr-pic" data-i="0">Share record picture</button>` : "") +
+    `<button class="btn ghost" data-run="caption">Share a caption</button>`;
   openSheet(html);
 }
 
@@ -3376,10 +3381,14 @@ function renderProgress() {
 
   renderMuscles();
   renderReview();
+  renderChallenges();
+  renderInjuries();
+  renderSleepTrend();
   renderLevels();
   renderWeekly();
   renderAchievements();
   renderBodyChart();
+  renderWeightSync();
 
   // Lifts that have stopped improving
   const stalled = names.filter(function (n) { return plateauInfo(stats[n]); });
@@ -3622,6 +3631,13 @@ function deloadReason() {
   });
   const hard = rated.filter(function (r) { return r === "hard"; }).length;
   if (rated.length >= 4 && hard / rated.length >= 0.6) return "Most exercises felt Hard in your last three workouts.";
+
+  // Reason 3: your shifts have given you little recovery lately (needs a shift pattern)
+  if (goals.rota) {
+    let sum = 0, n = 0;
+    for (let i = 1; i <= 14; i++) { const r = recovery(addDays(today, -i)); if (r !== null) { sum += r; n++; } }
+    if (n >= 12 && sum / n < 55) return "Your shifts have left little recovery time over the last two weeks.";
+  }
 
   return null;
 }
@@ -4096,6 +4112,7 @@ function openExerciseHistory(name) {
 
   let html = `<div class="card-label">Exercise history</div>
     <div class="big">${esc(name)}</div>
+    ${howToHtml(name)}
     <div class="feed-meta">${sessions.length} session${sessions.length === 1 ? "" : "s"}` +
     (bestE ? " · best est. 1RM " + fmtW(bestE) + " " + unit() : "") + `</div>`;
 
@@ -5200,6 +5217,8 @@ function renderBackupStatus() {
     : "You have " + workouts + " workouts saved only " + (NATIVE ? "on this phone." : "in this browser.");
   queueReminders();
   renderSafety();
+  renderSupps();
+  renderMusic();
 }
 
 $("export-btn").addEventListener("click", exportBackup);
@@ -6545,6 +6564,7 @@ function renderProtein() {
   const openSet = el.querySelector && el.querySelector("details") && el.querySelector("details").open;
   el.innerHTML = `<div class="up-row now" style="border:0;padding-top:0"><span class="card-label">Protein today</span><b>${got} / ${target} g</b></div>
     <div class="obj-bar"><i style="width:${pct}%"></i></div>
+    ${mealChipsHtml()}
     <div class="chips" style="margin-top:.8rem">
       <button class="chip" data-p="add" data-g="10">+10</button><button class="chip" data-p="add" data-g="20">+20</button>
       <button class="chip" data-p="add" data-g="30">+30</button><button class="chip" data-p="add" data-g="40">+40</button>
@@ -6556,6 +6576,11 @@ function renderProtein() {
         <input class="set-input" id="p-custom" inputmode="numeric" placeholder="grams" style="flex:1">
         <button class="btn ghost" data-p="custom" style="flex:1">Add</button>
       </div>
+      <div class="btn-row" style="margin-top:.5rem;align-items:center">
+        <input class="set-input" id="p-meal" maxlength="20" placeholder="Save as a quick meal, e.g. Chicken wrap" style="flex:2">
+        <button class="btn ghost" data-p="savemeal" style="flex:1">Save</button>
+      </div>
+      <div class="feed-meta">Type the grams in the box above, a name here, and Save. It then appears as a one-tap button.</div>
       <div class="btn-row" style="margin-top:.5rem;align-items:center">
         <input class="set-input" id="p-target" inputmode="numeric" placeholder="target (g)" value="${goals.proteinTarget > 0 ? goals.proteinTarget : ""}" style="flex:1">
         <button class="btn ghost" data-p="target" style="flex:1">Set target</button>
@@ -6570,6 +6595,9 @@ $("protein-card").addEventListener("click", function (e) {
   const a = b.dataset.p;
   if (a === "add") addProtein(b.dataset.g);
   if (a === "undo") undoProtein();
+  if (a === "meal") { const m = mealsList()[Number(b.dataset.v)]; if (m) addProtein(m.g); }
+  if (a === "savemeal") { if (!saveMeal($("p-meal").value, $("p-custom").value)) { alert("Type the grams and a name for the meal first."); return; } $("p-meal").value = ""; }
+  if (a === "mealdel") { const l = mealsList(); const n = prompt("Remove which meal? Type its name:", l.length ? l[l.length - 1].name : ""); if (n) { save("meals", l.filter(function (m) { return m.name.toLowerCase() !== String(n).trim().toLowerCase(); })); } }
   if (a === "custom") { if (!addProtein($("p-custom").value)) { $("p-custom").focus(); return; } }
   if (a === "target") {
     const v = Math.round(Number($("p-target").value));
@@ -6673,7 +6701,7 @@ let screenLock = null;
 function wantAwake() {
   if (settings.awake === "off") return false;
   const scr = document.querySelector(".screen.active");
-  return focusOn || (!NATIVE && (trk.on || trk.armed)) || restTimer !== null || !!(scr && scr.id === "workout");
+  return focusOn || !!mob || (!NATIVE && (trk.on || trk.armed)) || restTimer !== null || !!(scr && scr.id === "workout");
 }
 function syncWake() {
   try {
@@ -6761,7 +6789,7 @@ function renderFocus() {
   const t = focusTarget();
   let total = 0, done = 0;
   workout.exercises.forEach(function (ex) { ex.sets.forEach(function (s) { if (!s.warmup) { total++; if (s.done) done++; } }); });
-  const head = `<div class="fo-top"><button class="tool" data-fo="exit">✕ Exit</button><span class="feed-meta">${esc(workout.name)} · ${done} of ${total} sets</span><button class="tool${settings.gymVoice === "on" ? " on" : ""}" data-fo="speak" aria-label="Speak during the workout">🔊</button></div>`;
+  const head = `<div class="fo-top"><button class="tool" data-fo="exit">✕ Exit</button><span class="feed-meta">${esc(workout.name)} · ${done} of ${total} sets</span><span><button class="tool" data-fo="music" aria-label="Open my music">🎵</button><button class="tool${settings.gymVoice === "on" ? " on" : ""}" data-fo="speak" aria-label="Speak during the workout">🔊</button></span></div>`;
 
   if (!t) {
     el.innerHTML = head + `<div class="fo-mid"><div class="fo-name">Every set ticked</div>
@@ -6879,6 +6907,7 @@ $("focus").addEventListener("click", function (e) {
   const a = b.dataset.fo;
   if (a === "exit") { focusRead(); saveWorkout(); renderWorkout(); closeFocus(); return; }
   if (a === "finish") { closeFocus(); finishWorkout(); return; }
+  if (a === "music") { openMusic(); return; }
   if (a === "speak") { settings.gymVoice = settings.gymVoice === "on" ? "off" : "on"; save("settings", settings); renderFocus(); if (settings.gymVoice === "on") coachSay("Voice on. " + nextSetWords()); return; }
   if (a === "done") { focusDone(); return; }
   if (a === "mic") { focusRead(); voiceLog(); return; }
@@ -8104,6 +8133,7 @@ function renderRunSetup() {
       <div class="chips">${chip("autoPause", "on", "On")}${chip("autoPause", "off", "Off")}</div>
       <div class="feed-meta" style="margin-top:.4rem">Stops the clock when you stand still for 10 seconds (traffic lights, a gate) and starts it again when you move.</div></div>
     <button class="btn" data-rs="start">Start ${RUN_TYPES[p.type].verb}</button>
+    <button class="btn ghost" data-rs="music">🎵 Open my music</button>
     <button class="link-btn" data-rs="manual">Log one by hand (no GPS)</button>`;
 }
 $("run-setup").addEventListener("click", function (e) {
@@ -8111,6 +8141,7 @@ $("run-setup").addEventListener("click", function (e) {
   if (!b) return;
   if (b.dataset.rs === "start") { trackArm(); return; }
   if (b.dataset.rs === "manual") { openManualRun(); return; }
+  if (b.dataset.rs === "music") { openMusic(); return; }
   const k = b.dataset.k, v = b.dataset.v;
   runPrefs[k] = k === "outBack" ? v === "true" : v;
   saveRunPrefs();
@@ -8327,6 +8358,7 @@ function fetchSleep() {
     const mins = sleepSummary(res && res.samples, now);
     if (mins === null) throw new Error("No sleep found for last night. Wear your watch to bed, and open Samsung Health so it syncs.");
     save("sleepLast", { date: dateKey(new Date()), mins: mins, at: now });
+    sleepRemember(dateKey(new Date()), mins);
     settings.sleepAuto = true; save("settings", settings);
     return mins;
   });
@@ -8456,8 +8488,545 @@ $("sheet").addEventListener("click", function (e) {
   const b = e.target.closest("[data-run]");
   if (!b) return;
   if (b.dataset.run === "month") openMonthReport(Number(b.dataset.v));
+  if (b.dataset.run === "move-backup") { exportBackup(); }
+  if (b.dataset.run === "pr-pic") { b.disabled = true; b.textContent = "Making picture…"; sharePrPic(Number(b.dataset.i)).then(function () { b.disabled = false; b.textContent = "Share record picture"; }); }
+  if (b.dataset.run === "caption") shareOut("Caption", captionText(lastEntry, lastPrs));
   if (b.dataset.run === "month-share") { b.disabled = true; b.textContent = "Making picture…"; shareMonthPic().then(function () { b.disabled = false; b.textContent = "Share picture"; }); }
 });
+
+// =====================================================================
+// v2.25: records picture, captions, niggle tracker, how-to cards, challenges, sleep trend, supplement reminders
+// =====================================================================
+// ----- record picture + caption -----
+let lastPrs = [], lastEntry = null;
+function prCardText(p) {
+  const e = e1rm(p.kg, p.reps);
+  return { head: "NEW PERSONAL RECORD", name: p.name, big: p.kg > 0 ? fmtW(p.kg) + " " + unit() : p.reps + " reps", sub: p.kg > 0 ? "× " + p.reps + (e ? "   ·   est. 1RM " + fmtW(e) + " " + unit() : "") : "", date: niceDate(dateKey(new Date())) };
+}
+function drawPrCard(p) {
+  const W = 1080, H = 1350, t = prCardText(p);
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const c = cv.getContext("2d");
+  const css = getComputedStyle(document.documentElement);
+  const accent = (css.getPropertyValue("--accent") || "#ffffff").trim() || "#ffffff";
+  const font = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
+  const glow = c.createLinearGradient(0, 0, 0, H);
+  glow.addColorStop(0, "#1a1a1e"); glow.addColorStop(0.5, "#0b0b0d");
+  c.fillStyle = glow; c.fillRect(0, 0, W, H);
+  c.fillStyle = accent; c.fillRect(70, 96, 96, 10);
+  c.textAlign = "left"; c.fillStyle = accent; c.font = "700 40px " + font; c.fillText("🏆  " + t.head, 70, 190, W - 140);
+  c.fillStyle = "#fff"; c.font = "800 92px " + font; c.fillText(t.name, 70, 420, W - 140);
+  c.font = "800 200px " + font; c.fillText(t.big, 70, 700, W - 140);
+  c.fillStyle = "rgba(255,255,255,.7)"; c.font = "48px " + font; c.fillText(t.sub, 70, 790, W - 140);
+  c.fillStyle = "rgba(255,255,255,.5)"; c.font = "36px " + font; c.fillText(t.date, 70, 880);
+  return loadImg("logo-mark.svg", false).then(function (logo) {
+    const by = H - 150;
+    if (logo) { try { c.drawImage(logo, 70, by, 84, 102); } catch (err) {} }
+    c.fillStyle = "#fff"; c.font = "800 44px " + font; c.fillText("BTB", logo ? 180 : 70, by + 48);
+    c.fillStyle = "rgba(255,255,255,.6)"; c.font = "600 26px " + font; c.fillText("B E Y O N D   T H E   B O D Y", logo ? 180 : 70, by + 90);
+    return cv;
+  });
+}
+function sharePrPic(i) {
+  const p = lastPrs[i];
+  if (!p) return Promise.resolve("failed");
+  return drawPrCard(p).then(function (cv) { return new Promise(function (resolve) { cv.toBlob(resolve, "image/png"); }); }).then(function (blob) {
+    if (!blob) { alert("Couldn’t make the picture."); return "failed"; }
+    return fileOut("btb-pr-" + dateKey(new Date()) + ".png", blob, { share: true, title: "New record: " + p.name, text: captionText(lastEntry, [p]) });
+  });
+}
+// A ready-to-paste line: "Push day done 💪 12 sets, 4,200 kg lifted. New PR: Bench 80 kg × 5. #BTB"
+function captionText(w, prs) {
+  if (!w) return "";
+  const t = workoutTotals(w);
+  let s = w.name + " done 💪 " + t.sets + (t.sets === 1 ? " set" : " sets") + (t.volume ? ", " + Math.round(toDisp(t.volume)).toLocaleString() + " " + unit() + " lifted" : "") + (w.minutes ? " in " + w.minutes + " min" : "") + ".";
+  (prs || []).slice(0, 2).forEach(function (p) { s += " New PR: " + p.name + " " + (p.kg > 0 ? fmtW(p.kg) + " " + unit() + " × " : "") + p.reps + "."; });
+  return s + " #BTB #BeyondTheBody";
+}
+
+// ----- niggles (injuries) -----
+// The avoid list in Goals does the real work (it leaves exercises out of plans). This adds when it started, a note, and a nudge.
+function injurySync() {
+  const inj = load("injuries", {}), out = {};
+  let changed = false;
+  goals.avoid.forEach(function (a) { out[a] = inj[a] || { since: dateKey(new Date()), note: "" }; if (!inj[a]) changed = true; });
+  if (Object.keys(inj).length !== Object.keys(out).length) changed = true;
+  if (changed) save("injuries", out);
+  return out;
+}
+function daysSince(key) { return Math.max(0, Math.round((new Date(dateKey(new Date()) + "T00:00:00") - new Date(key + "T00:00:00")) / 86400000)); }
+function injuryHtml() {
+  const inj = injurySync(), areas = Object.keys(AVOID_AREAS);
+  const active = Object.keys(inj);
+  let body = active.length ? active.map(function (a) {
+    const d = daysSince(inj[a].since);
+    return `<div class="inj-row"><div><b>${esc(a)}</b><div class="feed-meta">${d === 0 ? "Started today" : d + " day" + (d === 1 ? "" : "s") + " now"}${d >= 14 ? " · still bothering you?" : ""}</div>
+      <input class="set-input note inj-note" data-inj-note="${esc(a)}" maxlength="80" placeholder="Note (optional)" value="${esc(inj[a].note || "")}"></div>
+      <button class="chip" data-inj="better" data-v="${esc(a)}">Better now</button></div>`;
+  }).join("") + `<div class="feed-meta" style="margin-top:.4rem">Exercises that load these areas are left out of your plans.</div>`
+    : `<div class="feed-meta">Nothing niggling. If something starts to hurt, mark it here and your plans will work around it.</div>`;
+  const free = areas.filter(function (a) { return !inj[a]; });
+  if (free.length) body += `<div class="card-label" style="margin-top:.7rem">Something hurting?</div><div class="chips">` + free.map(function (a) { return `<button class="chip" data-inj="add" data-v="${esc(a)}">${esc(a)}</button>`; }).join("") + `</div>`;
+  return `<div class="card-label">Niggles</div>` + body;
+}
+function renderInjuries() { const el = $("injury-card"); if (el) el.innerHTML = injuryHtml(); }
+function injuryChange(add, area) {
+  if (add && goals.avoid.indexOf(area) < 0) goals.avoid.push(area);
+  if (!add) goals.avoid = goals.avoid.filter(function (a) { return a !== area; });
+  save("goals", goals);
+  injurySync();
+  if (typeof refreshPlanAfterGoalChange === "function") refreshPlanAfterGoalChange();
+  renderInjuries();
+}
+
+// ----- how-to cards -----
+const HOWTO = [
+  [/^barbell bench press|^bench press/i, ["Eyes under the bar, shoulder blades pinched back and down.", "Feet planted, lower to the lower chest with elbows about 45° from your body.", "Press up and slightly back; keep your bum on the bench."], "Flaring the elbows out wide, or bouncing off the chest."],
+  [/deadlift/i, ["Bar over mid-foot, hips above knees, back flat.", "Push the floor away; bar stays against your legs.", "Stand tall at the top, don't lean back."], "Rounding the back or yanking the bar off the floor."],
+  [/squat/i, ["Feet about shoulder width, toes slightly out.", "Sit down between your hips with the chest up and knees tracking over toes.", "Drive up through the whole foot."], "Knees caving in, or heels lifting."],
+  [/overhead press|shoulder press|military/i, ["Squeeze your glutes and ribs down, bar at collarbone.", "Press straight up, moving your head through at the top.", "Finish with arms by your ears."], "Leaning back and pressing with the lower back."],
+  [/row/i, ["Hinge or brace so the back stays flat.", "Pull the elbow to your hip, not your shoulder.", "Squeeze the shoulder blade, then lower slowly."], "Using body swing to heave the weight."],
+  [/pull-?up|chin-?up|pulldown/i, ["Start from a full hang, shoulders pulled down.", "Lead with the chest and drive elbows to your ribs.", "Lower all the way, in control."], "Half reps, or kicking and swinging."],
+  [/push-?up/i, ["Hands under shoulders, body one straight line.", "Lower the chest to the floor, elbows about 45°.", "Push the floor away."], "Sagging hips or flaring elbows."],
+  [/curl/i, ["Elbows pinned to your sides.", "Curl up, squeeze, lower for a slow count of two or three.", "No swinging."], "Swinging the body to lift heavier."],
+  [/triceps|pushdown|skull|dip/i, ["Keep your upper arms still.", "Straighten fully and squeeze.", "Lower slowly."], "Letting the shoulders do the work."],
+  [/lateral raise|front raise|fly|rear delt|face pull/i, ["Light weight, soft elbows.", "Lead with the elbows, stop around shoulder height.", "Slow on the way down."], "Using momentum or going too heavy."],
+  [/lunge|split squat|step-?up/i, ["Take a long enough step that the front shin stays near vertical.", "Drop straight down, torso tall.", "Push through the front heel."], "Front knee collapsing inward."],
+  [/hip thrust|glute bridge/i, ["Shoulders on the bench, feet flat, chin tucked.", "Drive the hips up until your body is flat from knee to shoulder.", "Squeeze the glutes at the top."], "Arching the lower back instead of using the glutes."],
+  [/calf raise/i, ["Full stretch at the bottom.", "Rise high onto the toes and pause.", "Slow lower."], "Short, bouncy reps."],
+  [/plank|hollow|dead bug|bird dog/i, ["Ribs down, glutes tight.", "Breathe slowly, don't hold your breath.", "Stop when your form goes."], "Sagging the lower back."],
+  [/run|treadmill|walk|bike|rowing machine|elliptical|jump rope/i, ["Start easy: you should be able to talk.", "Keep a steady rhythm.", "Cool down for a couple of minutes."], "Starting too fast."]
+];
+function howTo(name) {
+  for (let i = 0; i < HOWTO.length; i++) if (HOWTO[i][0].test(name)) return { cues: HOWTO[i][1], mistake: HOWTO[i][2] };
+  return null;
+}
+function howToHtml(name) {
+  const h = howTo(name);
+  if (!h) return "";
+  return `<details class="howto"><summary>How to do it</summary><ol>${h.cues.map(function (c) { return "<li>" + esc(c) + "</li>"; }).join("")}</ol><div class="feed-meta">Watch for: ${esc(h.mistake)}</div></details>`;
+}
+
+// ----- monthly challenges -----
+function challengesFor(ym) {
+  const prev = monthStats(monthKey(1)), cur = monthStats(ym), out = [];
+  const clamp = function (v, lo, hi) { return Math.max(lo, Math.min(hi, v)); };
+  out.push({ label: "Workouts", target: clamp(prev.workouts + 1, 6, 20), now: cur.workouts, unit: "" });
+  out.push({ label: "Active days", target: clamp(prev.activeDays + 2, 10, 24), now: cur.activeDays, unit: "" });
+  if (prev.km > 0) out.push({ label: "Distance", target: Math.max(5, Math.round(distToDisp(prev.km) * 1.1)), now: Math.round(distToDisp(cur.km) * 10) / 10, unit: " " + distUnit() });
+  if (getHistory().length >= 3) out.push({ label: "New records", target: 1, now: cur.prs, unit: "" });
+  return out;
+}
+function challengeHtml() {
+  const ym = monthKey(0), list = challengesFor(ym);
+  const left = daysLeftInMonth();
+  return `<div class="card-label">${esc(monthName(ym))} challenges</div>` + list.map(function (c) {
+    const pct = Math.min(100, Math.round(100 * c.now / c.target)), done = c.now >= c.target;
+    return `<div class="chal"><div class="chal-top"><span>${done ? "✅ " : ""}${esc(c.label)}</span><span class="feed-meta">${c.now} / ${c.target}${c.unit}</span></div><div class="chal-bar"><i style="width:${pct}%"></i></div></div>`;
+  }).join("") + `<div class="feed-meta">Set from last month's numbers, a little higher. ${left} day${left === 1 ? "" : "s"} left.</div>`;
+}
+function daysLeftInMonth() { const d = new Date(); return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate() - d.getDate(); }
+function renderChallenges() { const el = $("challenge-card"); if (el) el.innerHTML = challengeHtml(); }
+
+// ----- sleep trend -----
+function sleepRemember(dateStr, mins) {
+  const h = load("sleepHist", []).filter(function (x) { return x.date !== dateStr; });
+  h.push({ date: dateStr, mins: mins });
+  h.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+  save("sleepHist", h.slice(-60));
+}
+function sleepTrendHtml() {
+  const h = load("sleepHist", []).slice(-14);
+  if (h.length < 2) return "";
+  const avg = h.reduce(function (n, x) { return n + x.mins; }, 0) / h.length;
+  return `<div class="card-label">Sleep, last ${h.length} nights</div>` + lineChartSvg(h.map(function (x) { return { date: x.date, v: Math.round(x.mins / 6) / 10 }; }), function (v) { return round1(v) + "h"; }) +
+    `<div class="feed-meta">Average ${sleepText(avg)}. Each night is saved when you check your sleep, so this fills in as you go.</div>`;
+}
+function renderSleepTrend() { const el = $("sleep-card"); if (el) { const h = sleepTrendHtml(); el.innerHTML = h; el.style.display = h ? "" : "none"; } }
+
+// ----- daily reminders (water, creatine...) -----
+const SUPP_IDS = [2300, 2301, 2302, 2303, 2304, 2305];
+function suppList() { const l = load("supps", []); return Array.isArray(l) ? l.filter(function (x) { return x && x.label && /^\d{2}:\d{2}$/.test(x.time); }).slice(0, 6) : []; }
+function suppHtml() {
+  const l = suppList();
+  return `<div class="card-label">Daily reminders</div>
+    <div class="feed-meta goal-blurb" style="margin-top:0">A nudge at the same time every day: water, creatine, anything.${NATIVE ? "" : " These only work in the installed app."}</div>` +
+    l.map(function (x, i) { return `<div class="supp-row"><span><b>${esc(x.label)}</b> · ${esc(x.time)}</span><button class="chip" data-supp="del" data-v="${i}">Remove</button></div>`; }).join("") +
+    (l.length < 6 ? `<div class="chips" style="margin:.5rem 0"><button class="chip" data-supp="preset" data-v="Creatine|09:00">+ Creatine 09:00</button><button class="chip" data-supp="preset" data-v="Water|11:00">+ Water 11:00</button><button class="chip" data-supp="preset" data-v="Water|15:00">+ Water 15:00</button></div>
+    <div class="supp-add"><input class="set-input note" id="supp-label" maxlength="24" placeholder="Name, e.g. Protein shake"><input type="time" class="inp-date" id="supp-time" value="20:00"><button class="chip" data-supp="add">Add</button></div>` : "");
+}
+function renderSupps() { const el = $("supp-card"); if (el) el.innerHTML = suppHtml(); }
+function syncSupps() {
+  if (!NATIVE) return Promise.resolve([]);
+  makeChannels();
+  const l = suppList();
+  return nativeCall("LocalNotifications", "cancel", { notifications: SUPP_IDS.map(function (id) { return { id: id }; }) }).catch(function () {}).then(function () {
+    if (!l.length) return l;
+    return nativeCall("LocalNotifications", "schedule", { notifications: l.map(function (x, i) {
+      return { id: SUPP_IDS[i], title: x.label, body: "Time for your " + x.label.toLowerCase() + ".", channelId: "reminders", schedule: { on: { hour: Number(x.time.slice(0, 2)), minute: Number(x.time.slice(3)) }, allowWhileIdle: true } };
+    }) }).then(function () { return l; });
+  }).catch(function () { return []; });
+}
+function suppChange(fn) {
+  const l = suppList(); fn(l);
+  save("supps", l.slice(0, 6));
+  renderSupps();
+  if (NATIVE) nativeCall("LocalNotifications", "requestPermissions", {}).catch(function () {}).then(syncSupps);
+}
+$("supp-card").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-supp]");
+  if (!b) return;
+  const a = b.dataset.supp;
+  if (a === "del") suppChange(function (l) { l.splice(Number(b.dataset.v), 1); });
+  if (a === "preset") { const p = String(b.dataset.v).split("|"); suppChange(function (l) { l.push({ label: p[0], time: p[1] }); }); }
+  if (a === "add") {
+    const label = (($("supp-label") || {}).value || "").trim(), time = ($("supp-time") || {}).value || "";
+    if (!label || !/^\d{2}:\d{2}$/.test(time)) { alert("Give it a name and a time."); return; }
+    suppChange(function (l) { l.push({ label: label.slice(0, 24), time: time }); });
+  }
+});
+$("injury-card").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-inj]");
+  if (!b) return;
+  injuryChange(b.dataset.inj === "add", b.dataset.v);
+});
+$("injury-card").addEventListener("change", function (e) {
+  const a = e.target && e.target.dataset && e.target.dataset.injNote;
+  if (!a) return;
+  const inj = injurySync();
+  if (inj[a]) { inj[a].note = String(e.target.value || "").slice(0, 80); save("injuries", inj); }
+});
+
+// =====================================================================
+// v2.26: music button, rest-day guide, easier-week from low recovery, weight from Health Connect, quick meals, new-phone guide
+// =====================================================================
+// ----- music -----
+const MUSIC_APPS = [["spotify", "Spotify", "https://open.spotify.com"], ["ytm", "YouTube Music", "https://music.youtube.com"], ["amazon", "Amazon Music", "https://music.amazon.co.uk"], ["deezer", "Deezer", "https://www.deezer.com"]];
+function musicPrefs() { const m = settings.music || {}; return { app: MUSIC_APPS.some(function (a) { return a[0] === m.app; }) ? m.app : "spotify", link: typeof m.link === "string" ? m.link : "" }; }
+function musicUrl() {
+  const m = musicPrefs();
+  if (/^https:\/\/[^\s]+$/i.test(m.link.trim())) return m.link.trim();
+  return MUSIC_APPS.filter(function (a) { return a[0] === m.app; })[0][2];
+}
+function openMusic() {
+  const url = musicUrl();
+  const fallback = function () { try { window.open(url, "_blank"); } catch (err) {} };
+  if (NATIVE) nativeCall("AppLauncher", "openUrl", { url: url }).catch(fallback); else fallback();
+}
+function musicHtml() {
+  const m = musicPrefs();
+  return `<div class="card-label">Music</div>
+    <div class="feed-meta goal-blurb" style="margin-top:0">A 🎵 button in focus mode and on the run screen opens your music app. Your music keeps playing while BTB is open.</div>
+    <div class="chips">${MUSIC_APPS.map(function (a) { return `<button class="chip${m.app === a[0] ? " on" : ""}" data-music="app" data-v="${a[0]}">${a[1]}</button>`; }).join("")}</div>
+    <div class="card-label" style="margin-top:.7rem">Playlist link (optional)</div>
+    <input class="set-input note" id="music-link" maxlength="200" placeholder="Paste a playlist link, https://…" value="${esc(m.link)}" style="width:100%;box-sizing:border-box">
+    <div class="feed-meta">With a link, the button opens that playlist (in the app, if it's installed).</div>`;
+}
+function renderMusic() { const el = $("music-card"); if (el) el.innerHTML = musicHtml(); }
+$("music-card").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-music]");
+  if (!b) return;
+  settings.music = Object.assign({}, musicPrefs(), { app: b.dataset.v }); save("settings", settings); renderMusic();
+});
+$("music-card").addEventListener("change", function (e) {
+  if (!e.target || e.target.id !== "music-link") return;
+  const v = String(e.target.value || "").trim();
+  settings.music = Object.assign({}, musicPrefs(), { link: /^https:\/\/[^\s]+$/i.test(v) ? v : "" }); save("settings", settings);
+  if (v && !settings.music.link) alert("That doesn't look like a link. It should start with https://");
+  renderMusic();
+});
+
+// ----- rest-day guide -----
+function restDayTips(key) {
+  if (!goals.rota) return null;
+  const type = shiftType(key), prev = shiftType(addDays(key, -1)), next = shiftType(addDays(key, 1));
+  if (type === "night") return { title: "Night shift today", tips: ["Have your main meal before you go in, then lighter snacks during the shift.", "Keep caffeine to the first half of the shift.", "Get the room dark and cool for the sleep afterwards."] };
+  if (type === "day") return null;
+  const tips = prev === "night"
+    ? ["Sleep when you need to, but be up by around midday so tonight still works.", "An easy walk in daylight helps reset your body clock.", "Skip heavy lifting today. Mobility or an easy session is plenty."]
+    : ["10 minutes of mobility: hips, shoulders and upper back.", "A walk or an easy cycle keeps you moving without taxing recovery.", "Hit your protein and drink plenty of water."];
+  if (next === "day" || next === "night") tips.push("You're back at work " + (next === "night" ? "for nights" : "tomorrow") + ", so aim for an early night.");
+  return { title: prev === "night" ? "Recovery day after nights" : "Rest day", tips: tips };
+}
+function tipsFoldHtml() {
+  const t = restDayTips(dateKey(new Date()));
+  return t ? `<details class="howto" style="margin-top:.5rem"><summary>${esc(t.title)}: tips</summary><ul class="rest-tips">${t.tips.map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("")}</ul><div class="feed-meta">General guidance, not medical advice.</div></details>` : "";
+}
+function renderRestDay() {
+  const el = $("rest-card");
+  if (!el) return;
+  const t = restDayTips(dateKey(new Date()));
+  el.style.display = t ? "" : "none";
+  el.innerHTML = t ? `<div class="card-label">${esc(t.title)}</div><ul class="rest-tips">${t.tips.map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("")}</ul><div class="feed-meta">General guidance, not medical advice.</div>` : "";
+}
+
+// ----- weight from Health Connect -----
+function weightSamples(samples) {
+  const byDay = {};
+  (samples || []).forEach(function (x) {
+    let kg = Number(x.value);
+    if (/pound|lb/i.test(String(x.unit || ""))) kg *= 0.45359237;
+    if (!(kg >= 20 && kg <= 400) || !x.startDate) return;
+    const day = dateKey(new Date(x.startDate));
+    if (!byDay[day] || new Date(x.startDate) > new Date(byDay[day].at)) byDay[day] = { kg: Math.round(kg * 100) / 100, at: x.startDate };
+  });
+  return byDay;
+}
+function fetchWeight() {
+  const now = Date.now();
+  return healthCall("requestAuthorization", { read: ["weight"], write: [] }).then(function (st) {
+    if (st && Array.isArray(st.readAuthorized) && st.readAuthorized.indexOf("weight") < 0) throw new Error("Weight permission wasn't given. You can allow it in Health Connect settings.");
+    return healthCall("readSamples", { dataType: "weight", startDate: new Date(now - 60 * 86400000).toISOString(), endDate: new Date(now).toISOString(), limit: 200, ascending: true });
+  }).then(function (res) {
+    const days = weightSamples(res && res.samples), keys = Object.keys(days);
+    if (!keys.length) throw new Error("No weight found in Health Connect for the last 60 days.");
+    let added = 0;
+    keys.forEach(function (d) {
+      const existing = bodyLog.find(function (e) { return e.date === d; });
+      if (existing && existing.weight > 0) return;       // never overwrite something you typed
+      if (existing) existing.weight = days[d].kg; else bodyLog.push({ date: d, weight: days[d].kg });
+      added++;
+    });
+    bodyLog.sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+    save("bodyLog", bodyLog);
+    return added;
+  });
+}
+function renderWeightSync() {
+  const el = $("weight-sync");
+  if (!el) return;
+  el.style.display = NATIVE ? "" : "none";
+  el.innerHTML = NATIVE ? `<button class="btn ghost" data-ws="go">Get my weight from Health Connect</button><div class="feed-meta" id="ws-msg">Reads weigh-ins from your scales or watch app. Anything you've typed yourself is never replaced.</div>` : "";
+}
+$("weight-sync").addEventListener("click", function (e) {
+  if (!e.target.closest("[data-ws]")) return;
+  const m = $("ws-msg");
+  if (m) m.textContent = "Reading Health Connect…";
+  fetchWeight().then(function (n) { renderBodyForm(); renderBodyChart(); const m2 = $("ws-msg"); if (m2) m2.textContent = n ? "Added " + n + " weigh-in" + (n === 1 ? "" : "s") + "." : "Nothing new: those days already have a weight."; },
+    function (err) { const m2 = $("ws-msg"); if (m2) m2.textContent = (err && err.message) || "Couldn't read your weight."; });
+});
+
+// ----- quick meals (protein) -----
+function mealsList() { const l = load("meals", []); return Array.isArray(l) ? l.filter(function (m) { return m && m.name && m.g > 0; }).slice(0, 8) : []; }
+function saveMeal(name, g) {
+  g = Math.round(Number(g)); name = String(name || "").trim().slice(0, 20);
+  if (!name || !(g > 0 && g <= 300)) return false;
+  const l = mealsList().filter(function (m) { return m.name.toLowerCase() !== name.toLowerCase(); });
+  l.push({ name: name, g: g });
+  save("meals", l.slice(-8));
+  return true;
+}
+function mealChipsHtml() {
+  const l = mealsList();
+  if (!l.length) return "";
+  return `<div class="chips" style="margin-top:.8rem">` + l.map(function (m, i) { return `<button class="chip" data-p="meal" data-v="${i}">${esc(m.name)} +${m.g}</button>`; }).join("") + `<button class="chip" data-p="mealdel">Edit…</button></div>`;
+}
+
+// ----- moving to a new phone -----
+function openMoveGuide() {
+  openSheet(`<div class="card-label">New phone</div><div class="big">Moving BTB across</div>
+    <ol class="move-steps">
+      <li><b>Make a backup here.</b> It holds your workouts, runs, goals and settings, and progress photos if they can be read.<button class="btn" data-run="move-backup" style="margin-top:.5rem">Make a backup now</button></li>
+      <li><b>Put the file somewhere safe</b> that isn't this phone: Google Drive, or email it to yourself.</li>
+      <li><b>Install BTB on the new phone</b> the same way you did on this one (plug it in and press ▶ in Android Studio).</li>
+      <li><b>Restore.</b> In BTB go to Gym → Settings → Your data → Restore backup and pick the file.</li>
+      <li><b>Allow permissions again:</b> location, notifications, microphone and Health Connect.</li>
+      <li><b>Check your history</b> looks right before wiping the old phone.</li>
+    </ol>
+    <div class="feed-meta">Android's own phone-to-phone transfer may carry the app across, but don't rely on it for your data. The backup file is the safe route.</div>
+    <button class="btn ghost" data-a="add-close">Close</button>`);
+}
+$("move-btn").addEventListener("click", openMoveGuide);
+
+// =====================================================================
+// MOBILITY TRAINER (v2.27)
+// Guided, timed routines for rest days. Each move has a cue; sided moves run left then right.
+// =====================================================================
+// id: [name, seconds, both sides?, cue]
+const MOB_MOVES = {
+  catcow:    ["Cat-cow", 45, false, "On hands and knees, round your back up, then let it sag, slowly with each breath."],
+  childs:    ["Child’s pose", 45, false, "Sit back onto your heels, arms long in front, and breathe into your back."],
+  thread:    ["Thread the needle", 30, true, "From hands and knees, slide one arm under your chest and rest your shoulder down."],
+  openbook:  ["Open book", 30, true, "Lie on your side, knees bent. Open the top arm out behind you and follow it with your eyes."],
+  cobra:     ["Cobra stretch", 30, false, "Lie face down, press your chest up gently, hips stay down."],
+  twist:     ["Lying twist", 30, true, "On your back, drop both knees to one side, arms out wide, shoulders down."],
+  nineninety:["90/90 hips", 35, true, "Sit with both knees bent at right angles, lean over the front shin, back tall."],
+  hipflexor: ["Kneeling hip flexor stretch", 40, true, "Half kneeling, squeeze the back glute and tip your pelvis under, then lean forward."],
+  figure4:   ["Figure-4 glute stretch", 40, true, "On your back, ankle over the opposite knee, pull the leg towards your chest."],
+  deepsquat: ["Deep squat hold", 45, false, "Sink into a deep squat, elbows pushing the knees out, chest up."],
+  wgs:       ["World’s greatest stretch", 30, true, "Lunge, hand down inside the front foot, then rotate that arm up to the ceiling."],
+  hamstring: ["Hamstring stretch", 35, true, "Heel out in front, toes up, hinge from the hips with a flat back."],
+  calf:      ["Wall calf stretch", 30, true, "Hands on a wall, back heel down, leg straight, lean in."],
+  quad:      ["Standing quad stretch", 30, true, "Hold your ankle behind you, knees together, tuck your hips under."],
+  armcircle: ["Arm circles", 30, false, "Big, slow circles, half forwards and half backwards."],
+  wallslide: ["Wall slides", 40, false, "Back and arms against a wall, slide your arms up and down without lifting your back off."],
+  crossbody: ["Cross-body shoulder stretch", 25, true, "Pull one arm across your chest with the other, shoulders relaxed."],
+  doorway:   ["Doorway chest stretch", 30, true, "Forearm on a door frame, gently turn your body away."],
+  shouldcar: ["Shoulder circles, big", 30, true, "Reach one arm in the largest slow circle you can, ribs still."],
+  neck:      ["Neck rolls", 30, false, "Drop your ear to your shoulder, roll your chin down and across. Slow, never forced."],
+  ankle:     ["Ankle circles", 20, true, "Lift one foot and draw slow circles with your toes."],
+  legsup:    ["Legs up the wall", 90, false, "Lie back with your legs up a wall. Let everything go heavy."],
+  breathe:   ["Slow breathing", 60, false, "In through the nose for four, out through the mouth for six."]
+};
+const MOB_ROUTINES = [
+  { id: "reset5", name: "Quick reset", desc: "A few minutes to loosen up when you are short on time.", moves: ["catcow", "wgs", "deepsquat", "thread", "childs"] },
+  { id: "hips10", name: "Hips and lower back", desc: "For tight hips from sitting, driving and long shifts on your feet.", moves: ["nineninety", "hipflexor", "figure4", "deepsquat", "hamstring", "twist", "childs"] },
+  { id: "shoulders8", name: "Shoulders and upper back", desc: "Opens the chest and upper back after pressing and carrying.", moves: ["neck", "armcircle", "wallslide", "thread", "openbook", "crossbody", "doorway"] },
+  { id: "full12", name: "Full-body flow", desc: "A head-to-toe session for a proper rest day.", moves: ["catcow", "wgs", "nineninety", "deepsquat", "hamstring", "calf", "shouldcar", "openbook", "doorway", "childs"] },
+  { id: "nights6", name: "Wake-up after nights", desc: "Gentle movement for the first day off after night shifts. Then get some daylight.", moves: ["armcircle", "catcow", "wgs", "deepsquat", "calf", "shouldcar"] },
+  { id: "wind6", name: "Wind-down for sleep", desc: "Slow stretches and breathing before bed, or before sleeping after a night shift.", moves: ["childs", "twist", "hamstring", "legsup", "breathe"] }
+];
+function mobRoutine(id) { return MOB_ROUTINES.filter(function (r) { return r.id === id; })[0] || null; }
+function mobSteps(id) {
+  const r = mobRoutine(id), steps = [];
+  if (!r) return steps;
+  steps.push({ name: "Get ready", secs: 8, cue: "First up: " + MOB_MOVES[r.moves[0]][0] + ".", move: null, lead: true });
+  r.moves.forEach(function (m, mi) {
+    const d = MOB_MOVES[m];
+    if (d[2]) { ["Left side", "Right side"].forEach(function (side, si) { steps.push({ name: d[0], side: side, secs: d[1], cue: d[3], move: m, mi: mi, first: si === 0 }); }); }
+    else steps.push({ name: d[0], side: "", secs: d[1], cue: d[3], move: m, mi: mi, first: true });
+  });
+  return steps;
+}
+function mobMinutes(id) { return Math.max(1, Math.round(mobSteps(id).reduce(function (n, st) { return n + st.secs; }, 0) / 60)); }
+function mobLog() { const l = load("mobLog", []); return Array.isArray(l) ? l : []; }
+function mobDoneToday() { const t = dateKey(new Date()); return mobLog().some(function (x) { return x.date === t; }); }
+function mobCount(days) { const from = addDays(dateKey(new Date()), -days); return mobLog().filter(function (x) { return x.date > from; }).length; }
+// Which routine to suggest today
+function mobSuggest(key) {
+  key = key || dateKey(new Date());
+  if (goals.rota && shiftType(key) === "off" && shiftType(addDays(key, -1)) === "night") return "nights6";
+  if (goals.rota && shiftType(key) === "night") return "wind6";
+  const rot = ["hips10", "shoulders8", "full12"], last = mobLog().slice(-1)[0];
+  const at = last ? rot.indexOf(last.id) : -1;
+  return rot[(at + 1) % rot.length];
+}
+
+let mob = null, mobTimer = null;
+function mobSay(text) { if (mob && mob.voice && text) coachSay(text); }
+function mobStart(id, now) {
+  const steps = mobSteps(id);
+  if (!steps.length) return false;
+  now = now || Date.now();
+  mob = { id: id, steps: steps, i: 0, endAt: 0, left: 0, paused: false, done: false, voice: settings.mobVoice !== "off", began: now };
+  mobSetStep(0, now);
+  $("mob").classList.add("show");
+  if (!mobTimer) mobTimer = setInterval(function () { mobTick(Date.now()); }, 250);
+  if (mobTimer && mobTimer.unref) mobTimer.unref();
+  mobRender();
+  syncWake();
+  return true;
+}
+function mobSetStep(i, now) {
+  const st = mob.steps[i];
+  mob.i = i; mob.endAt = now + st.secs * 1000; mob.left = st.secs * 1000;
+  if (st.lead) mobSay("Let's go. " + st.cue);
+  else mobSay(st.first ? st.name + (st.side ? ", " + st.side : "") + ". " + st.cue : "Switch. " + st.side + ".");
+  try { if (navigator.vibrate) navigator.vibrate(60); } catch (err) {}
+}
+function mobTick(now) {
+  if (!mob || mob.done || mob.paused) return;
+  mob.left = Math.max(0, mob.endAt - now);
+  if (mob.left > 0) { mobUpdateClock(); return; }
+  if (mob.i + 1 >= mob.steps.length) { mobFinish(now); return; }
+  mobSetStep(mob.i + 1, now);
+  mobRender();
+}
+function mobSkip(dir, now) {
+  if (!mob || mob.done) return;
+  now = now || Date.now();
+  const n = mob.i + dir;
+  if (n < 0) { mobSetStep(0, now); }
+  else if (n >= mob.steps.length) { mobFinish(now); return; }
+  else mobSetStep(n, now);
+  if (mob.paused) { mob.paused = false; }
+  mobRender();
+}
+function mobPause(now) {
+  if (!mob || mob.done) return;
+  now = now || Date.now();
+  if (mob.paused) { mob.paused = false; mob.endAt = now + mob.left; } else { mob.left = Math.max(0, mob.endAt - now); mob.paused = true; }
+  mobRender();
+}
+function mobAdd(secs, now) { if (!mob || mob.done) return; now = now || Date.now(); if (mob.paused) mob.left += secs * 1000; else mob.endAt += secs * 1000; mobTick(now); mobRender(); }
+function mobFinish(now) {
+  now = now || Date.now();
+  mob.done = true;
+  const secs = Math.max(30, Math.round((now - mob.began) / 1000));
+  const log = mobLog(); log.push({ date: dateKey(new Date()), id: mob.id, secs: secs });
+  save("mobLog", log.slice(-200));
+  mobSay("Done. Nice work.");
+  mobRender();
+  renderMobCard();
+}
+function mobExit() {
+  clearInterval(mobTimer); mobTimer = null;
+  mob = null;
+  $("mob").classList.remove("show");
+  syncWake();
+  renderMobCard();
+}
+function mobClock(ms) { const s = Math.ceil(ms / 1000); return Math.floor(s / 60) + ":" + (s % 60 < 10 ? "0" : "") + (s % 60); }
+function mobUpdateClock() {
+  const c = $("mob-clock"), b = $("mob-bar");
+  if (c && mob) c.textContent = mobClock(mob.left);
+  if (b && mob) { const total = mob.steps.reduce(function (n, st) { return n + st.secs; }, 0); let before = 0; for (let k = 0; k < mob.i; k++) before += mob.steps[k].secs; const cur = mob.steps[mob.i].secs - mob.left / 1000; b.style.width = Math.min(100, Math.round(100 * (before + cur) / total)) + "%"; }
+}
+function mobRender() {
+  const el = $("mob-body");
+  if (!el || !mob) return;
+  const r = mobRoutine(mob.id);
+  if (mob.done) {
+    const mins = Math.max(1, Math.round((Date.now() - mob.began) / 60000));
+    el.innerHTML = `<div class="fo-mid"><div class="fo-name">Mobility done ✓</div><div class="fo-set">${esc(r.name)}</div>
+      <div class="feed-meta">${mobCount(30)} session${mobCount(30) === 1 ? "" : "s"} in the last 30 days.</div></div>
+      <button class="btn fo-done" data-mo="exit">Finish</button>`;
+    return;
+  }
+  const st = mob.steps[mob.i], total = mob.steps.length - 1;
+  el.innerHTML = `<div class="fo-top"><button class="tool" data-mo="exit">✕ Exit</button><span class="feed-meta">${esc(r.name)}${st.lead ? "" : " · " + mob.i + " of " + total}</span><button class="tool${mob.voice ? " on" : ""}" data-mo="voice" aria-label="Spoken guidance">🔊</button></div>
+    <div class="mob-barwrap"><i id="mob-bar"></i></div>
+    <div class="fo-mid"><div class="fo-name">${esc(st.name)}</div>${st.side ? `<div class="mob-side">${esc(st.side)}</div>` : ""}
+      <div class="mob-clock" id="mob-clock">${mobClock(mob.left)}</div>
+      <div class="fo-set">${esc(st.cue)}</div>
+      <div class="feed-meta">Stop if anything pinches or hurts. Stretch to a mild pull, not pain.</div></div>
+    <div class="btn-row"><button class="btn ghost" data-mo="back">⏮ Back</button><button class="btn" data-mo="pause">${mob.paused ? "▶ Resume" : "⏸ Pause"}</button><button class="btn ghost" data-mo="next">Skip ⏭</button></div>
+    <div class="fo-smart"><button class="tool" data-mo="add">+10s</button></div>`;
+  mobUpdateClock();
+}
+$("mob").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-mo]");
+  if (!b || !mob) return;
+  const a = b.dataset.mo;
+  if (a === "exit") { if (!mob.done && mob.i > 1 && !confirm("Stop this session?")) return; mobExit(); }
+  if (a === "pause") mobPause();
+  if (a === "next") mobSkip(1);
+  if (a === "back") mobSkip(-1);
+  if (a === "add") mobAdd(10);
+  if (a === "voice") { mob.voice = !mob.voice; settings.mobVoice = mob.voice ? "on" : "off"; save("settings", settings); mobRender(); }
+});
+function mobCardHtml() {
+  const id = mobSuggest(), r = mobRoutine(id), done = mobDoneToday();
+  return `<div class="card-label">Mobility</div>
+    <div class="mob-sug"><div><b>${esc(r.name)}</b><div class="feed-meta">${mobMinutes(id)} min · ${esc(r.desc)}</div></div></div>
+    <div class="btn-row"><button class="btn" data-mob="start" data-v="${id}">${done ? "Go again" : "Start"}</button><button class="btn ghost" data-mob="pick">Other routines</button></div>
+    ${done ? `<div class="feed-meta">Done today ✓ · ` : `<div class="feed-meta">`}${mobCount(30)} session${mobCount(30) === 1 ? "" : "s"} in the last 30 days. Guided and timed, no equipment needed.</div>` + tipsFoldHtml();
+}
+function renderMobCard() { const el = $("mob-card"); if (el) el.innerHTML = mobCardHtml(); }
+function openMobPicker() {
+  openSheet(`<div class="card-label">Mobility</div><div class="big">Choose a routine</div>` + MOB_ROUTINES.map(function (r) {
+    return `<div class="mob-row"><div><b>${esc(r.name)}</b><div class="feed-meta">${mobMinutes(r.id)} min · ${esc(r.desc)}</div></div><button class="chip" data-mob="start" data-v="${r.id}">Start</button></div>`;
+  }).join("") + `<button class="btn ghost" data-a="add-close">Close</button>`);
+}
+function mobClick(e) {
+  const b = e.target.closest("[data-mob]");
+  if (!b) return;
+  if (b.dataset.mob === "pick") openMobPicker();
+  if (b.dataset.mob === "start") { if (typeof closeSheet === "function") closeSheet(); mobStart(b.dataset.v); }
+}
+$("mob-card").addEventListener("click", mobClick);
+$("sheet").addEventListener("click", mobClick);
 function runStat(r) { return r.type === "ride" ? speedStr(r.km, r.secs) : paceStr(r.secs / r.km) + " " + paceUnit(); }
 function niceDate(key) { return new Date(key + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }); }
 
@@ -9100,7 +9669,7 @@ function syncReminders() {
 function queueReminders() {
   if (!NATIVE) return;
   clearTimeout(remindTimer);
-  remindTimer = setTimeout(function () { syncReminders(); syncWidget(); }, 1500);
+  remindTimer = setTimeout(function () { syncReminders(); syncWidget(); syncSupps(); }, 1500);
 }
 // ----- home-screen widget -----
 // The next eight days' plan, written where the Android widget can read it. Needs the optional widget

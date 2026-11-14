@@ -121,6 +121,7 @@
     <button class="chip" id="setup-toggle" type="button" hidden></button>
     <div id="workout-setup">
     <div class="ready" id="ready-row"></div>
+    <div class="card" id="mob-card"></div>
     <div class="ready" id="sore-row"></div>
     <button class="btn gen" id="generate-btn">🎲 Generate workout</button>
     <p class="gen-status" id="gen-status"></p>
@@ -158,6 +159,12 @@
     <h2>Review</h2>
     <div class="card" id="review-card"></div>
     <button class="btn ghost" id="month-btn" type="button">Monthly report picture</button>
+    <h2>This month</h2>
+    <div class="card" id="challenge-card"></div>
+
+    <h2>Body check</h2>
+    <div class="card" id="injury-card"></div>
+    <div class="card" id="sleep-card" style="display:none"></div>
 
     <h2>Strength levels</h2>
     <div class="card" id="levels-card"></div>
@@ -186,6 +193,7 @@
     <h2>Body</h2>
     <div class="card" id="body-form"></div>
     <div class="card" id="body-chart"></div>
+    <div id="weight-sync" style="display:none"></div>
 
     <h2>Photos</h2>
     <div class="card" id="photo-add"></div>
@@ -235,10 +243,10 @@
     </div>
     <div class="sub-view" data-sub="settings">
     <h2>Settings</h2>
-    <div class="card" id="settings-card"></div>
-
-    <h2>Security</h2>
-    <div class="card" id="pin-card"></div>
+    <details class="fold" open><summary><span class="fold-t">Workout and display</span></summary><div class="fold-body"><div class="card" id="settings-card"></div></div></details>
+    <details class="fold"><summary><span class="fold-t">Music</span></summary><div class="fold-body"><div class="card" id="music-card"></div></div></details>
+    <details class="fold"><summary><span class="fold-t">Daily reminders</span></summary><div class="fold-body"><div class="card" id="supp-card"></div></div></details>
+    <details class="fold"><summary><span class="fold-t">Security</span></summary><div class="fold-body"><div class="card" id="pin-card"></div></div></details>
 
     <h2>Your data</h2>
     <div class="card">
@@ -249,6 +257,7 @@
       </div>
       <input type="file" id="import-file" accept=".json,application/json" hidden>
       <button class="btn ghost" id="csv-btn" style="margin-top:.6rem">Export history as a spreadsheet (CSV)</button>
+      <button class="btn ghost" id="move-btn" style="margin-top:.6rem" type="button">Moving to a new phone?</button>
       <div id="safety-card" style="margin-top:1rem"></div>
       <button class="btn ghost danger" id="wipe-btn" style="margin-top:.6rem">Erase everything and start fresh</button>
     </div>
@@ -291,6 +300,7 @@
 
   <!-- ===== FOCUS MODE ===== -->
   <div class="focus" id="focus"><div class="focus-body" id="focus-body"></div></div>
+  <div class="focus" id="mob"><div class="focus-body" id="mob-body"></div></div>
 
   <!-- ===== LIVE RUN (GPS) ===== -->
   <div class="focus track" id="track"><div class="focus-body" id="track-body"></div></div>
