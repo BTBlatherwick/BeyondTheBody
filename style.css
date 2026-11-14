@@ -1296,8 +1296,8 @@ details > summary { min-height: 40px; }
 .grit-line { margin: 1rem 0 .4rem; padding-left: .8rem; border-left: 3px solid var(--accent); font-style: italic; color: var(--muted); }
 
 /* ===== v2.29.0: grit look (default), tidier Home, insights ===== */
-[data-theme="clean"] .hero { min-height: 230px; }
-.tile { min-height: 120px; }
+[data-look="grit"] .hero { min-height: 230px; }
+[data-look="grit"] .tile { min-height: 120px; }
 .insight { padding: .55rem 0 .55rem .8rem; border-left: 3px solid var(--accent); margin: .5rem 0; line-height: 1.35; }
 
 [data-look="grit"] { --bg: #070707; --card: #0f0f0f; --border: #2a2726; --text: #ece8e0; --muted: #8d8880; --accent: #b3261e; --on-accent: #ffffff; --chip: #1a1817; --pill: rgba(179, 38, 30, .35); }
@@ -1322,3 +1322,7 @@ details > summary { min-height: 40px; }
 [data-look="grit"] .mob-side { border-radius: 3px; text-transform: uppercase; letter-spacing: .1em; }
 [data-look="grit"] .grit-line, [data-look="grit"] .insight { border-left-width: 4px; }
 [data-look="grit"] .splash-quote { font-family: "Roboto Condensed", sans-serif-condensed, "Arial Narrow", system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase; font-style: normal; font-size: .95rem; }
+
+/* ===== v2.29.1: credit ===== */
+.splash-credit { position: absolute; bottom: calc(env(safe-area-inset-bottom, 0px) + 1.6rem); left: 0; right: 0; text-align: center; color: #8d8880; font-size: .7rem; letter-spacing: .3em; text-transform: uppercase; opacity: 0; animation: splash-fade 1.2s ease 1.2s forwards; }
+.about-credit { margin: .2rem 0 .6rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; font-size: .8rem; }

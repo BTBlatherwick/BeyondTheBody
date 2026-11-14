@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "2.29.0";
+const APP_VERSION = "2.29.2";
 
 // =====================================================================
 // SMALL HELPERS
@@ -97,7 +97,9 @@ let settings = load("settings", { units: "kg", rest: 90 });
 if (!settings.warmup) settings.warmup = "off";
 if (settings.awake !== "off") settings.awake = "on";
 if (settings.grit !== "off") settings.grit = "on";
-if (settings.look !== "clean") settings.look = "grit";   // the look: Grit (default) or Clean
+// The look: Clean (the default) or Grit. Everyone starts on Clean once, then your choice is kept.
+if (settings.lookV !== 2) { settings.look = "clean"; settings.lookV = 2; }
+if (settings.look !== "grit") settings.look = "clean";
 // One look (Clean), plus an accent colour you choose.
 settings.theme = "clean";
 settings.themeV = 2;
@@ -136,7 +138,7 @@ function accentColours(hex) {
 function applyTheme() {
   const root = document.documentElement;
   root.setAttribute("data-theme", "clean");
-  root.setAttribute("data-look", settings.look === "clean" ? "clean" : "grit");
+  root.setAttribute("data-look", settings.look === "grit" ? "grit" : "clean");
   const col = accentColours(settings.accent);
   ["--accent", "--on-accent", "--pill"].forEach(function (v) { root.style.removeProperty(v); });
   if (col) {
@@ -180,8 +182,8 @@ function renderSettings() {
     group("Auto warm-up sets", "warmup", [["off", "Off"], ["barbell", "Barbell lifts"]]) +
     group("Keep screen on while training", "awake", [["on", "On"], ["off", "Off"]]) +
     '<div class="feed-meta">Stops the phone locking mid-workout, so the rest timer can always buzz. Uses a little more battery.</div>' +
-    group("Look", "look", [["grit", "Grit"], ["clean", "Clean"]]) +
-    '<div class="feed-meta">Grit: dark, hard-edged, condensed type with a worn texture. Clean: the softer original. Grit uses red as its accent unless you pick another colour above.</div>' +
+    group("Look", "look", [["clean", "Clean"], ["grit", "Grit"]]) +
+    '<div class="feed-meta">Clean: the original look. Grit: dark, hard-edged, condensed type with a worn texture. Grit uses red as its accent unless you pick another colour above.</div>' +
     group("Grit lines", "grit", [["on", "On"], ["off", "Off"]]) +
     '<div class="feed-meta">A short, hard line when you open the app, before a session, after one, and on the widget.</div>' +
     group("Speak during workouts", "gymVoice", [["off", "Off"], ["on", "On"]]) +
