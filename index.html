@@ -47,6 +47,7 @@
     <div class="splash-glow"></div>
     <img class="splash-logo" src="logo-mark.svg" alt="">
     <div class="splash-name">Beyond The Body</div>
+    <div class="splash-quote" id="splash-quote"></div>
   </div>
 
 
@@ -159,6 +160,8 @@
     <h2>Review</h2>
     <div class="card" id="review-card"></div>
     <button class="btn ghost" id="month-btn" type="button">Monthly report picture</button>
+    <h2>Insights</h2>
+    <div class="card" id="insight-card"></div>
     <h2>This month</h2>
     <div class="card" id="challenge-card"></div>
 
@@ -301,6 +304,7 @@
   <!-- ===== FOCUS MODE ===== -->
   <div class="focus" id="focus"><div class="focus-body" id="focus-body"></div></div>
   <div class="focus" id="mob"><div class="focus-body" id="mob-body"></div></div>
+  <div class="focus gate" id="gate"><div class="focus-body" id="gate-body"></div></div>
 
   <!-- ===== LIVE RUN (GPS) ===== -->
   <div class="focus track" id="track"><div class="focus-body" id="track-body"></div></div>
@@ -375,7 +379,7 @@
         setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 600);
       }
       el.addEventListener("click", hide);
-      setTimeout(hide, short ? 700 : 2300);
+      setTimeout(function () { if (el.getAttribute("data-quote")) setTimeout(hide, 1200); else hide(); }, short ? 700 : 2300);
     })();
   </script>
   <script src="app.js"></script>

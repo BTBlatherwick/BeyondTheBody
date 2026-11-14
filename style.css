@@ -1283,3 +1283,42 @@ button.coach-row { display: flex; align-items: center; gap: .9rem; width: 100%; 
 details > summary { min-height: 40px; }
 .howto summary, .goal-weekly summary, .feed-detail summary { display: flex; align-items: center; min-height: 40px; }
 .feed-actions { flex-wrap: wrap; }
+
+/* ===== v2.28.0: grit lines ===== */
+.splash-quote { position: relative; max-width: 78vw; text-align: center; color: #d8d3c6; font-size: 1.05rem; line-height: 1.4; letter-spacing: .02em; font-style: italic; opacity: 0; animation: splash-fade 1.2s ease 1.5s forwards; }
+@keyframes splash-fade { from { opacity: 0; } to { opacity: .9; } }
+.gate { z-index: 20; background: #000; }
+.gate .focus-body { justify-content: center; }
+.gate-in { display: flex; flex-direction: column; gap: 1.6rem; align-items: center; text-align: center; }
+.gate-title { color: var(--muted); text-transform: uppercase; letter-spacing: .4em; font-size: .75rem; padding-left: .4em; }
+.gate-line { font-size: 1.9rem; line-height: 1.25; font-weight: 800; text-wrap: balance; }
+.gate-go { width: 100%; max-width: 320px; }
+.grit-line { margin: 1rem 0 .4rem; padding-left: .8rem; border-left: 3px solid var(--accent); font-style: italic; color: var(--muted); }
+
+/* ===== v2.29.0: grit look (default), tidier Home, insights ===== */
+[data-theme="clean"] .hero { min-height: 230px; }
+.tile { min-height: 120px; }
+.insight { padding: .55rem 0 .55rem .8rem; border-left: 3px solid var(--accent); margin: .5rem 0; line-height: 1.35; }
+
+[data-look="grit"] { --bg: #070707; --card: #0f0f0f; --border: #2a2726; --text: #ece8e0; --muted: #8d8880; --accent: #b3261e; --on-accent: #ffffff; --chip: #1a1817; --pill: rgba(179, 38, 30, .35); }
+[data-look="grit"] body { background: #070707; }
+[data-look="grit"] body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 150; opacity: .06; background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .5 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+[data-look="grit"] .screen > h1, [data-look="grit"] h2, [data-look="grit"] .big, [data-look="grit"] .hero-title, [data-look="grit"] .fold-t, [data-look="grit"] .fo-name, [data-look="grit"] .gate-line, [data-look="grit"] .mob-clock {
+  font-family: "Roboto Condensed", sans-serif-condensed, "Arial Narrow", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .06em; font-weight: 800;
+}
+[data-look="grit"] h2 { font-size: 1.15rem; letter-spacing: .1em; padding-bottom: .35rem; border-bottom: 2px solid var(--accent); display: inline-block; margin-bottom: .9rem; }
+[data-look="grit"] .hero-title { font-size: 2rem; line-height: 1.05; }
+[data-look="grit"] .card-label, [data-look="grit"] .hero-label { text-transform: uppercase; letter-spacing: .14em; font-size: .7rem; font-weight: 700; color: var(--muted); }
+[data-look="grit"] .card, [data-look="grit"] .stat, [data-look="grit"] .tile, [data-look="grit"] .item, [data-look="grit"] .badge { border-radius: 4px; border-color: var(--border); }
+[data-look="grit"] .hero { border-radius: 4px; border-left: 4px solid var(--accent); background: linear-gradient(180deg, #151413, #090909); }
+[data-look="grit"] .btn, [data-look="grit"] .chip, [data-look="grit"] .tool, [data-look="grit"] .pill { border-radius: 3px; text-transform: uppercase; letter-spacing: .08em; font-weight: 700; }
+[data-look="grit"] .btn { font-size: .95rem; }
+[data-look="grit"] .chip, [data-look="grit"] .tool { font-size: .78rem; }
+[data-look="grit"] .chip.on { background: var(--accent); color: var(--on-accent); }
+[data-look="grit"] .pill { background: var(--accent); color: var(--on-accent); }
+[data-look="grit"] .select, [data-look="grit"] .set-input, [data-look="grit"] .rpe { border-radius: 3px; }
+[data-look="grit"] .mbar, [data-look="grit"] .obj-bar, [data-look="grit"] .chal-bar, [data-look="grit"] .mob-barwrap { border-radius: 0; }
+[data-look="grit"] .obj-bar i, [data-look="grit"] .chal-bar i { border-radius: 0; }
+[data-look="grit"] .mob-side { border-radius: 3px; text-transform: uppercase; letter-spacing: .1em; }
+[data-look="grit"] .grit-line, [data-look="grit"] .insight { border-left-width: 4px; }
+[data-look="grit"] .splash-quote { font-family: "Roboto Condensed", sans-serif-condensed, "Arial Narrow", system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase; font-style: normal; font-size: .95rem; }

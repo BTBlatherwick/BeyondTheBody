@@ -3,7 +3,7 @@
 // Change this number every time you upload new files to GitHub.
 // Phones check it, and show an "Update available" banner when it changes.
 // =====================================================================
-const APP_VERSION = "2.27.1";
+const APP_VERSION = "2.29.0";
 
 // =====================================================================
 // SMALL HELPERS
@@ -96,6 +96,8 @@ const REST_OPTIONS = [45, 60, 90, 120, 180, 240];
 let settings = load("settings", { units: "kg", rest: 90 });
 if (!settings.warmup) settings.warmup = "off";
 if (settings.awake !== "off") settings.awake = "on";
+if (settings.grit !== "off") settings.grit = "on";
+if (settings.look !== "clean") settings.look = "grit";   // the look: Grit (default) or Clean
 // One look (Clean), plus an accent colour you choose.
 settings.theme = "clean";
 settings.themeV = 2;
@@ -134,6 +136,7 @@ function accentColours(hex) {
 function applyTheme() {
   const root = document.documentElement;
   root.setAttribute("data-theme", "clean");
+  root.setAttribute("data-look", settings.look === "clean" ? "clean" : "grit");
   const col = accentColours(settings.accent);
   ["--accent", "--on-accent", "--pill"].forEach(function (v) { root.style.removeProperty(v); });
   if (col) {
@@ -177,6 +180,10 @@ function renderSettings() {
     group("Auto warm-up sets", "warmup", [["off", "Off"], ["barbell", "Barbell lifts"]]) +
     group("Keep screen on while training", "awake", [["on", "On"], ["off", "Off"]]) +
     '<div class="feed-meta">Stops the phone locking mid-workout, so the rest timer can always buzz. Uses a little more battery.</div>' +
+    group("Look", "look", [["grit", "Grit"], ["clean", "Clean"]]) +
+    '<div class="feed-meta">Grit: dark, hard-edged, condensed type with a worn texture. Clean: the softer original. Grit uses red as its accent unless you pick another colour above.</div>' +
+    group("Grit lines", "grit", [["on", "On"], ["off", "Off"]]) +
+    '<div class="feed-meta">A short, hard line when you open the app, before a session, after one, and on the widget.</div>' +
     group("Speak during workouts", "gymVoice", [["off", "Off"], ["on", "On"]]) +
     '<div class="feed-meta">In focus mode it says what is next (exercise, weight, reps), counts down the last seconds of a rest, and tells you when it is over. Works best with headphones.</div>' +
     (NATIVE
@@ -3068,6 +3075,7 @@ function openSummary(entry, prs, newBadges) {
     <div class="feed-meta" style="margin:.3rem 0 .6rem">1 = rough, 5 = great. Optional.</div>
     <input class="set-input note" id="sum-note" maxlength="160" placeholder="A note about today (optional)">`;
 
+  html += gritSummaryLine(prs);
   html += `<button class="btn" data-a="summary-done">Done</button>
     <button class="btn ghost" data-run="gym-pic" data-i="${getHistory().length - 1}">Share picture</button>` +
     (prs.length ? `<button class="btn ghost" data-run="pr-pic" data-i="0">Share record picture</button>` : "") +
@@ -3381,6 +3389,7 @@ function renderProgress() {
 
   renderMuscles();
   renderReview();
+  renderInsights();
   renderChallenges();
   renderInjuries();
   renderSleepTrend();
@@ -6938,7 +6947,10 @@ $("focus").addEventListener("click", function (e) {
     renderFocus();
   }
 });
-$("open-focus").addEventListener("click", openFocus);
+$("open-focus").addEventListener("click", function () {
+  const anyDone = workout && workout.exercises.some(function (ex) { return ex.sets.some(function (s) { return s.done; }); });
+  if (anyDone) openFocus(); else gritGate("lift", workout ? workout.name : "Workout", openFocus);
+});
 
 
 // =====================================================================
@@ -8139,7 +8151,7 @@ function renderRunSetup() {
 $("run-setup").addEventListener("click", function (e) {
   const b = e.target.closest("[data-rs]");
   if (!b) return;
-  if (b.dataset.rs === "start") { trackArm(); return; }
+  if (b.dataset.rs === "start") { gritGate("run", RUN_TYPES[runPrefs.type].label, trackArm); return; }
   if (b.dataset.rs === "manual") { openManualRun(); return; }
   if (b.dataset.rs === "music") { openMusic(); return; }
   const k = b.dataset.k, v = b.dataset.v;
@@ -9027,6 +9039,124 @@ function mobClick(e) {
 }
 $("mob-card").addEventListener("click", mobClick);
 $("sheet").addEventListener("click", mobClick);
+
+// =====================================================================
+// GRIT LINES (v2.28): short, quiet, hard lines at the start of a session, on the splash, in the widget
+// All original. Nothing here is attributed to anyone.
+// =====================================================================
+const GRIT = {
+  lift: ["No one is coming to lift it for you.", "Quiet room. Heavy bar. Say nothing.", "Do the work while the others sleep.", "The weight doesn’t care how you feel.", "Earn it in silence.", "One more rep is a decision, not a feeling.", "Strong is built where nobody is watching.", "Pain is the price. Pay it.", "Show up. Shut up. Lift.", "The bar is honest. Be honest back.", "Discipline is doing it after the mood has left.", "Make it heavy. Make it count.", "Rust or iron. Choose."],
+  run: ["Miles don’t negotiate.", "Lungs burning. Mind quiet. Keep going.", "Run until the noise in your head stops.", "The road keeps the receipts.", "Slow is still moving. Moving is still winning.", "Every step is a vote for who you’re becoming.", "Earn the quiet at the end.", "Cold, dark, tired. Still running."],
+  rest: ["Rest like a soldier, not a quitter.", "Recover hard. Come back harder.", "Sharpen the blade. Don’t dull it.", "Stillness is training too.", "The iron waits. So will you.", "Heal in silence. Return louder."],
+  night: ["While they sleep, you work.", "Night shift. Same fire.", "The dark hours build the strongest people.", "Tired is not the same as done.", "Own the hours nobody wants."],
+  comeback: ["Missed days don’t define you. Quitting does.", "Come back. No speech. Just the first rep.", "You didn’t lose it. You paused it. Pick it up.", "Start small. Start now.", "The bar hasn’t moved. Neither have you. Fix that."],
+  pr: ["New ceiling. Break it again.", "Yesterday’s limit is today’s warm-up.", "Heavy done. Quietly.", "That’s what the work was for.", "Proof. Not talk."],
+  done: ["Done. Say nothing. Come back tomorrow.", "The work is the reward. Rest well.", "Another brick laid. The wall is getting taller.", "Quiet pride. Back at it soon.", "Logged. Earned. Next."],
+  any: ["Heavy silence. Honest work.", "Be the one who shows up.", "Strength is quiet.", "Build in silence. Let results speak."]
+};
+function gritOn() { return settings.grit !== "off"; }
+function gritHash(str) { let h = 5381; for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0; return Math.abs(h); }
+// salt = the day for the widget (one line a day); a fresh value each time for the splash and the session screen
+function gritLine(kind, salt) {
+  const list = (GRIT[kind] && GRIT[kind].length) ? GRIT[kind] : GRIT.any;
+  return list[gritHash(kind + "|" + String(salt === undefined ? Math.random() : salt)) % list.length];
+}
+function daysIdle() {
+  const hist = getHistory(), last = [hist.length ? hist[hist.length - 1].date : "", runs.length ? runs.map(function (r) { return r.date; }).sort().pop() : ""].sort().pop();
+  return last ? daysBetween(last, dateKey(new Date())) : null;
+}
+// What kind of day it is, for choosing the line
+function gritKind(key) {
+  key = key || dateKey(new Date());
+  if (goals.rota) {
+    const t = shiftType(key);
+    if (t === "night") return "night";
+    if (t === "off" && !(load("workoutDates", []) || []).includes(key)) { const idle = daysIdle(); if (idle !== null && idle >= 4) return "comeback"; return "rest"; }
+  }
+  const idle = daysIdle();
+  if (idle !== null && idle >= 4) return "comeback";
+  return "lift";
+}
+// Fills the line under the logo while the opening animation plays
+function gritSplash() {
+  try {   // decoration only: it must never stop the app starting
+    const el = $("splash-quote"), sp = $("splash");
+    if (!el || !sp || !gritOn() || document.documentElement.getAttribute("data-splash") === "short") return;
+    el.textContent = gritLine(Math.random() < 0.5 ? gritKind() : "any");
+    sp.setAttribute("data-quote", "1");
+  } catch (err) { /* optional */ }
+}
+// A quiet full-screen moment before a session. Tap to begin.
+let gateNext = null;
+function gritGate(kind, title, go) {
+  if (!gritOn()) { go(); return; }
+  gateNext = go;
+  $("gate-body").innerHTML = `<div class="gate-in"><div class="gate-title">${esc(title)}</div>
+    <div class="gate-line">${esc(gritLine(kind === "run" ? "run" : gritKind()))}</div>
+    <button class="btn gate-go" data-gate="go">Begin</button>
+    <button class="link-btn" data-gate="skip">Skip</button></div>`;
+  $("gate").classList.add("show");
+}
+$("gate").addEventListener("click", function (e) {
+  const b = e.target.closest("[data-gate]");
+  if (!b) return;
+  $("gate").classList.remove("show");
+  const go = gateNext; gateNext = null;
+  if (go) go();
+});
+function gritSummaryLine(prs) { return gritOn() ? `<div class="grit-line">${esc(gritLine(prs && prs.length ? "pr" : "done"))}</div>` : ""; }
+
+// =====================================================================
+// INSIGHTS (v2.29): patterns in your own numbers. Each one needs enough sessions on both sides to say anything.
+// =====================================================================
+function avgOf(list) { return list.reduce(function (n, x) { return n + x; }, 0) / list.length; }
+function sessionWeight(w) { const t = workoutTotals(w); return t.volume > 0 && t.sets > 0 ? t.volume / t.sets : 0; }   // average kg moved per set
+function pctWord(a, b) { return Math.round(Math.abs(a / b - 1) * 100); }
+function insightList() {
+  const out = [], MIN = 3, hist = getHistory().filter(function (w) { return sessionWeight(w) > 0; });
+  // 1. Sleep and lifting
+  const sleep = {}; load("sleepHist", []).forEach(function (x) { sleep[x.date] = x.mins; });
+  const good = [], poor = [];
+  hist.forEach(function (w) { if (sleep[w.date] === undefined) return; (sleep[w.date] >= 420 ? good : poor).push(sessionWeight(w)); });
+  if (good.length >= MIN && poor.length >= MIN) {
+    const a = avgOf(good), b = avgOf(poor);
+    out.push(pctWord(a, b) < 4 ? { text: "Sleep hasn't made a clear difference to your lifting so far.", n: good.length + poor.length }
+      : { text: "After 7+ hours of sleep you move about " + pctWord(a, b) + "% " + (a > b ? "more" : "less") + " weight per set than after less.", n: good.length + poor.length });
+  }
+  // 2. The first day off after night shifts
+  if (goals.rota) {
+    const post = [], other = [];
+    hist.forEach(function (w) { (shiftType(w.date) === "off" && shiftType(addDays(w.date, -1)) === "night" ? post : other).push(sessionWeight(w)); });
+    if (post.length >= MIN && other.length >= MIN) {
+      const a = avgOf(post), b = avgOf(other);
+      out.push(pctWord(a, b) < 4 ? { text: "Training the day after nights costs you very little so far.", n: post.length + other.length }
+        : { text: "On the first day off after nights you move about " + pctWord(a, b) + "% " + (a > b ? "more" : "less") + " weight per set than on other days.", n: post.length + other.length });
+    }
+    // 3. Running after a night shift
+    const rp = runs.filter(function (r) { return r.type === "run" && r.km >= 1 && r.secs > 0; });
+    const rpost = [], rother = [];
+    rp.forEach(function (r) { (shiftType(addDays(r.date, -1)) === "night" ? rpost : rother).push(r.secs / r.km); });
+    if (rpost.length >= MIN && rother.length >= MIN) {
+      const a = avgOf(rpost), b = avgOf(rother);
+      if (pctWord(a, b) >= 3) out.push({ text: "Runs the day after a night shift are about " + pctWord(a, b) + "% " + (a > b ? "slower" : "faster") + " than your others.", n: rpost.length + rother.length });
+    }
+  }
+  // 4. Your usual training day
+  if (hist.length >= 8) {
+    const days = [0, 0, 0, 0, 0, 0, 0];
+    hist.forEach(function (w) { days[(new Date(w.date + "T00:00:00").getDay() + 6) % 7]++; });
+    const top = days.indexOf(Math.max.apply(null, days));
+    if (days[top] >= 3 && days[top] / hist.length >= 0.3) out.push({ text: "You train most on " + ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][top] + "s: " + days[top] + " of your " + hist.length + " logged sessions.", n: hist.length });
+  }
+  return out;
+}
+function insightsHtml() {
+  const l = insightList();
+  return `<div class="card-label">Insights</div>` + (l.length ? l.map(function (x) { return `<div class="insight">${esc(x.text)}</div>`; }).join("") +
+    `<div class="feed-meta">Patterns in your own numbers, not proof. They firm up as you log more.</div>`
+    : `<div class="feed-meta">Nothing to say yet. Insights appear once there are a few sessions on each side of a comparison: with a shift pattern set, a week or two of sleep readings, and around ten sessions.</div>`);
+}
+function renderInsights() { const el = $("insight-card"); if (el) el.innerHTML = insightsHtml(); }
 function runStat(r) { return r.type === "ride" ? speedStr(r.km, r.secs) : paceStr(r.secs / r.km) + " " + paceUnit(); }
 function niceDate(key) { return new Date(key + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }); }
 
@@ -9683,7 +9813,7 @@ function widgetData(now) {
     const state = d.gym && d.gym.done ? "Done" : d.run && d.run.done ? "Done" : "";
     return { date: d.date, t: plan || kind, s: plan ? (d.shift === "night" ? "Night shift today" : d.work ? "Work day" : "") + (state ? (d.work || d.shift ? " · " : "") + state : "") : (goals.rota && !d.work ? cycleLabel(cyclePos(d.date)) : "") };
   });
-  return { v: 1, streak: streakText(weekStreak()), days: days };
+  return { v: 1, streak: streakText(weekStreak()), q: gritOn() ? gritLine(gritKind(dateKey(now)), dateKey(now)) : "", days: days };
 }
 function syncWidget() {
   if (!NATIVE) return Promise.resolve(false);
@@ -10356,3 +10486,5 @@ autoSleep();
 document.addEventListener("visibilitychange", function () {
   if (document.visibilityState === "visible") { checkForUpdate(false); autoSleep(); autoSafety(); }
 });
+
+gritSplash();
